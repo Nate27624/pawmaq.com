@@ -51,7 +51,7 @@ function TrashIcon() {
 
 function readComposerDraft(defaultCountry: string): ComposerDraftState {
   const fallback: ComposerDraftState = {
-    collapsed: false,
+    collapsed: true,
     caption: "",
     locationPrecision: "country",
     countryInput: defaultCountry,
@@ -75,7 +75,7 @@ function readComposerDraft(defaultCountry: string): ComposerDraftState {
         ? parsed.locationPrecision
         : "country";
     return {
-      collapsed: typeof parsed.collapsed === "boolean" ? parsed.collapsed : false,
+      collapsed: typeof parsed.collapsed === "boolean" ? parsed.collapsed : true,
       caption: typeof parsed.caption === "string" ? parsed.caption : "",
       locationPrecision,
       countryInput:
@@ -456,22 +456,35 @@ export function VideoComposer({
   }
 
   return (
-    <section className="panel composer reveal">
-      <header className="composer__header">
-        <h2>Create Post</h2>
-        <button
-          type="button"
-          className="composer__collapse"
-          onClick={() => setCollapsed((current) => !current)}
-          aria-expanded={!collapsed}
-        >
-          {collapsed ? "Expand" : "Minimize"}
-        </button>
-      </header>
+    <section className={collapsed ? "composer composer--collapsed reveal" : "panel composer reveal"}>
       {collapsed ? (
-        <p className="composer__collapsed-note">Composer minimized. Draft is preserved.</p>
+        <div className="composer__collapsed-row" role="region" aria-label="Create post">
+          <strong className="composer__collapsed-title">Create Post</strong>
+          <span className="composer__collapsed-note">
+            {isSignedIn ? "Hidden while you browse. Draft is preserved." : "Sign in is required to publish."}
+          </span>
+          <button
+            type="button"
+            className="composer__collapse"
+            onClick={() => setCollapsed(false)}
+            aria-expanded="false"
+          >
+            Expand
+          </button>
+        </div>
       ) : (
         <>
+          <header className="composer__header">
+            <h2>Create Post</h2>
+            <button
+              type="button"
+              className="composer__collapse"
+              onClick={() => setCollapsed(true)}
+              aria-expanded="true"
+            >
+              Minimize
+            </button>
+          </header>
           <div
             className="dropzone"
             onDragOver={(event) => event.preventDefault()}

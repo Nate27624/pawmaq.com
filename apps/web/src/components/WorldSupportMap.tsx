@@ -123,12 +123,12 @@ export function WorldSupportMap({
         </div>
         <p>
           {allCountriesMode
-            ? "All countries mode is active. Toggle it off to open the map."
-            : "Click a country to filter the world feed."}
+            ? "All countries mode is active."
+            : "Click any country to filter the world feed."}
         </p>
       </header>
       {allCountriesMode ? (
-        <p className="world-map__collapsed-note">Map hidden while all countries is on.</p>
+        <p className="world-map__collapsed-note">Turn off “All countries” to use the map filter.</p>
       ) : (
         <div className="map-wrapper">
           <ComposableMap projectionConfig={{ scale: 140 }}>

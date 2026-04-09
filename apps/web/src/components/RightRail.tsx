@@ -24,7 +24,7 @@ export function RightRail() {
       </ul>
       <div className="right-rail__note">
         <h3>Ranking Rules</h3>
-        <p>World: posts are sorted by likes versus dislikes within your selected time window.</p>
+        <p>World ranking follows your selected time window and sort mode from User settings.</p>
       </div>
     </aside>
   );

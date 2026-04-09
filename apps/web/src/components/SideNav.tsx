@@ -27,7 +27,7 @@ export function SideNav({
         </svg>
         <h1 className="brand">pawmaq.com</h1>
       </button>
-      <p className="brand-subtitle">Signals, clips, and community context.</p>
+      <p className="brand-subtitle">Watch what people are posting right now.</p>
       <nav className="tab-list" aria-label="Feed tabs">
         <button
           className={activeTab === "following" ? "tab-button active" : "tab-button"}
