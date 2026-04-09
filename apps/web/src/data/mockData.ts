@@ -1,10 +1,13 @@
 import type { CountrySupport, FeedPost } from "../types";
 
+const NOW_MS = Date.now();
+
 export const worldSupportData: CountrySupport[] = [
   { iso2: "US", country: "United States", population: 341814420, supporters: 16300000 },
   { iso2: "IN", country: "India", population: 1438069596, supporters: 24800000 },
   { iso2: "BR", country: "Brazil", population: 216422446, supporters: 13600000 },
   { iso2: "JP", country: "Japan", population: 123753041, supporters: 7600000 },
+  { iso2: "KR", country: "South Korea", population: 51713126, supporters: 3300000 },
   { iso2: "NG", country: "Nigeria", population: 229152217, supporters: 5200000 },
   { iso2: "ID", country: "Indonesia", population: 281190067, supporters: 11100000 },
   { iso2: "PH", country: "Philippines", population: 115843670, supporters: 7600000 },
@@ -21,9 +24,16 @@ export const starterPosts: FeedPost[] = [
     author: "Lina Park",
     handle: "@linapark",
     caption: "Street edits from Seoul tonight. Fast cuts and neon rain.",
+    originalLanguage: "Korean",
+    translatedCaptions: {
+      English: "Street edits from Seoul tonight. Fast cuts and neon rain.",
+      Spanish: "Ediciones callejeras desde Seúl esta noche. Cortes rápidos y lluvia neón."
+    },
     countryCode: "KR",
     countryName: "South Korea",
     createdAt: "2h ago",
+    createdAtHoursAgo: 2,
+    createdAtMs: NOW_MS - 2 * 60 * 60 * 1000,
     posterUrl:
       "https://images.unsplash.com/photo-1470229722913-7c0e2dbbafd3?auto=format&fit=crop&w=1200&q=80",
     likes: 12400,
@@ -39,9 +49,15 @@ export const starterPosts: FeedPost[] = [
     author: "Nate Silva",
     handle: "@natesilva",
     caption: "I compared creator growth in 12 countries. Brazil is exploding per-capita.",
+    originalLanguage: "English",
+    translatedCaptions: {
+      Portuguese: "Comparei o crescimento de criadores em 12 países. O Brasil está explodindo per capita."
+    },
     countryCode: "BR",
     countryName: "Brazil",
     createdAt: "4h ago",
+    createdAtHoursAgo: 4,
+    createdAtMs: NOW_MS - 4 * 60 * 60 * 1000,
     posterUrl:
       "https://images.unsplash.com/photo-1515378960530-7c0da6231fb1?auto=format&fit=crop&w=1200&q=80",
     likes: 18200,
@@ -57,9 +73,12 @@ export const starterPosts: FeedPost[] = [
     author: "Maya Chow",
     handle: "@mayachow",
     caption: "Micro-documentary: indie creators in Manila building from phones only.",
+    originalLanguage: "English",
     countryCode: "PH",
     countryName: "Philippines",
     createdAt: "7h ago",
+    createdAtHoursAgo: 7,
+    createdAtMs: NOW_MS - 7 * 60 * 60 * 1000,
     posterUrl:
       "https://images.unsplash.com/photo-1492684223066-81342ee5ff30?auto=format&fit=crop&w=1200&q=80",
     likes: 9700,
@@ -75,9 +94,15 @@ export const starterPosts: FeedPost[] = [
     author: "Rex Coleman",
     handle: "@rexco",
     caption: "Hot take: most creators should stop editing and just publish raw footage.",
+    originalLanguage: "English",
+    translatedCaptions: {
+      Spanish: "Opinión fuerte: la mayoría de creadores debería dejar de editar y publicar material en bruto."
+    },
     countryCode: "US",
     countryName: "United States",
     createdAt: "9h ago",
+    createdAtHoursAgo: 9,
+    createdAtMs: NOW_MS - 9 * 60 * 60 * 1000,
     posterUrl:
       "https://images.unsplash.com/photo-1520975916090-3105956dac38?auto=format&fit=crop&w=1200&q=80",
     likes: 5300,
@@ -93,9 +118,15 @@ export const starterPosts: FeedPost[] = [
     author: "Ari Singh",
     handle: "@arisingh",
     caption: "This platform should hide all political clips for 30 days. Prove me wrong.",
+    originalLanguage: "English",
+    translatedCaptions: {
+      Hindi: "इस प्लेटफ़ॉर्म को 30 दिनों के लिए सभी राजनीतिक क्लिप छुपा देने चाहिए। मुझे गलत साबित करो।"
+    },
     countryCode: "IN",
     countryName: "India",
     createdAt: "11h ago",
+    createdAtHoursAgo: 11,
+    createdAtMs: NOW_MS - 11 * 60 * 60 * 1000,
     posterUrl:
       "https://images.unsplash.com/photo-1470225620780-dba8ba36b745?auto=format&fit=crop&w=1200&q=80",
     likes: 4100,

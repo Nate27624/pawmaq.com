@@ -24,7 +24,7 @@ export function RightRail() {
       </ul>
       <div className="right-rail__note">
         <h3>Ranking Rules</h3>
-        <p>World: engagement velocity + support-rate. Controversial: non-positive vote share + dislike pressure.</p>
+        <p>World: engagement velocity + support-rate. Approval slider: delivers posts closest to your target.</p>
       </div>
     </aside>
   );

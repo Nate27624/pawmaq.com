@@ -1,8 +1,14 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { FeedPost } from "../types";
 
 interface FeedCardProps {
   post: FeedPost;
+  nativeLanguage: string;
+  isSaved: boolean;
+  onToggleSave: (postId: string) => void;
+  isSignedIn: boolean;
+  approvalAlgorithm: ApprovalAlgorithm;
+  countryApprovalPercent: number | null;
   rankScore?: number;
   rankLabel?: string;
 }
@@ -31,6 +37,22 @@ function ViewsIcon() {
   );
 }
 
+function TrashIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M9 3H15L16 4H21V6H3V4H8L9 3ZM6 8H18L17 21H7L6 8ZM10 10V18H12V10H10ZM12 10V18H14V10H12Z" />
+    </svg>
+  );
+}
+
+function SaveIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M6 3H18C19.1 3 20 3.9 20 5V21L12 17.2L4 21V5C4 3.9 4.9 3 6 3ZM6 5V17.6L12 14.7L18 17.6V5H6Z" />
+    </svg>
+  );
+}
+
 function ThumbUpIcon() {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -49,6 +71,15 @@ function ThumbDownIcon() {
 
 type ReactionState = "up" | "neutral" | "down" | null;
 type CommentReaction = "up" | "down" | null;
+type PostLanguageMode = "native" | "original";
+type LeftActionState = "comments" | "repost" | "views" | null;
+type ApprovalAlgorithm = "weighted" | "wilson" | "bayesian";
+const SIGN_IN_REQUIRED_COMMENT_MESSAGE =
+  "Sorry for the inconvenience, you need to sign in to comment. This helps keep the number of bots at a minimum.";
+const SIGN_IN_REQUIRED_VOTE_MESSAGE =
+  "Sorry for the inconvenience, you need to sign in to vote. This helps keep the number of bots at a minimum.";
+const SIGN_IN_REQUIRED_COMMENT_REACTION_MESSAGE =
+  "Sorry for the inconvenience, you need to sign in to upload media. This helps keep the number of bots at a minimum.";
 
 interface ThreadReply {
   id: string;
@@ -167,6 +198,44 @@ function formatLikeCompact(value: number): string {
   });
 }
 
+function clampPercent(value: number): number {
+  return Math.min(100, Math.max(0, value));
+}
+
+function approvalPercentFromAlgorithm(
+  algorithm: ApprovalAlgorithm,
+  upvotes: number,
+  neutralVotes: number,
+  downvotes: number
+): number {
+  const totalVotes = upvotes + neutralVotes + downvotes;
+  if (totalVotes <= 0) {
+    return 50;
+  }
+
+  const weightedPositive = upvotes + neutralVotes * 0.5;
+  const weightedRatio = weightedPositive / totalVotes;
+
+  if (algorithm === "weighted") {
+    return clampPercent(weightedRatio * 100);
+  }
+
+  if (algorithm === "wilson") {
+    const z = 1.96;
+    const denominator = 1 + (z * z) / totalVotes;
+    const center = weightedRatio + (z * z) / (2 * totalVotes);
+    const margin =
+      (z * Math.sqrt((weightedRatio * (1 - weightedRatio) + (z * z) / (4 * totalVotes)) / totalVotes)) /
+      denominator;
+    return clampPercent(((center / denominator) - margin) * 100);
+  }
+
+  // Bayesian smoothing with a neutral prior centered at 50%.
+  const priorWeight = 20;
+  const priorMean = 0.5;
+  return clampPercent(((weightedPositive + priorWeight * priorMean) / (totalVotes + priorWeight)) * 100);
+}
+
 function countryFlagFromIso2(code: string): string {
   const normalized = code.trim().toUpperCase();
   if (!/^[A-Z]{2}$/.test(normalized)) {
@@ -178,26 +247,83 @@ function countryFlagFromIso2(code: string): string {
   );
 }
 
-export function FeedCard({ post, rankScore, rankLabel = "Popularity" }: FeedCardProps) {
-  const [commentsOpen, setCommentsOpen] = useState(false);
-  const [viewsOpen, setViewsOpen] = useState(false);
-  const [reposted, setReposted] = useState(false);
+export function FeedCard({
+  post,
+  nativeLanguage,
+  isSaved,
+  onToggleSave,
+  isSignedIn,
+  approvalAlgorithm,
+  countryApprovalPercent,
+  rankScore,
+  rankLabel = "Popularity"
+}: FeedCardProps) {
+  const cardRef = useRef<HTMLElement | null>(null);
+  const [languageMode, setLanguageMode] = useState<PostLanguageMode>("native");
+  const [activeLeftAction, setActiveLeftAction] = useState<LeftActionState>(null);
   const [reactionState, setReactionState] = useState<ReactionState>(null);
   const [commentInput, setCommentInput] = useState("");
+  const [commentAuthModalMessage, setCommentAuthModalMessage] = useState<string | null>(null);
   const [threadComments, setThreadComments] = useState<ThreadComment[]>(() => createSeedComments(post));
   const [repliesOpenByComment, setRepliesOpenByComment] = useState<Record<string, boolean>>({});
   const [replyComposerOpenByComment, setReplyComposerOpenByComment] = useState<Record<string, boolean>>({});
   const [replyDraftByComment, setReplyDraftByComment] = useState<Record<string, string>>({});
 
+  const commentsOpen = activeLeftAction === "comments";
+  const viewsOpen = activeLeftAction === "views";
+  const reposted = activeLeftAction === "repost";
   const commentCount = post.comments + threadComments.length;
   const repostCount = post.reposts + (reposted ? 1 : 0);
   const upvoteCount = post.upvotes + (reactionState === "up" ? 1 : 0);
   const neutralCount = post.neutralVotes + (reactionState === "neutral" ? 1 : 0);
   const downvoteCount = post.downvotes + (reactionState === "down" ? 1 : 0);
-  const totalVoteCount = upvoteCount + neutralCount + downvoteCount;
-  const approvalPercent = totalVoteCount > 0 ? (upvoteCount / totalVoteCount) * 100 : 0;
+  const approvalPercent = approvalPercentFromAlgorithm(approvalAlgorithm, upvoteCount, neutralCount, downvoteCount);
+  const translatedCaption = post.translatedCaptions?.[nativeLanguage];
+  const originalMatchesNative =
+    nativeLanguage.trim().toLowerCase() === post.originalLanguage.trim().toLowerCase();
+  const translatedMatchesOriginal =
+    translatedCaption?.trim().toLowerCase() === post.caption.trim().toLowerCase();
+  const hasTranslationForNative = Boolean(
+    translatedCaption && !translatedMatchesOriginal && !originalMatchesNative
+  );
+  const effectiveLanguageMode: PostLanguageMode = hasTranslationForNative ? languageMode : "original";
+  const displayCaption =
+    effectiveLanguageMode === "native" ? translatedCaption ?? post.caption : post.caption;
+
+  useEffect(() => {
+    if (!commentAuthModalMessage) {
+      return;
+    }
+
+    function closeWhenCardLeavesViewport() {
+      const card = cardRef.current;
+      if (!card) {
+        setCommentAuthModalMessage(null);
+        return;
+      }
+      const rect = card.getBoundingClientRect();
+      const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
+      const isVisible = rect.bottom > 0 && rect.top < viewportHeight;
+      if (!isVisible) {
+        setCommentAuthModalMessage(null);
+      }
+    }
+
+    closeWhenCardLeavesViewport();
+    window.addEventListener("scroll", closeWhenCardLeavesViewport, { passive: true });
+    window.addEventListener("resize", closeWhenCardLeavesViewport);
+    return () => {
+      window.removeEventListener("scroll", closeWhenCardLeavesViewport);
+      window.removeEventListener("resize", closeWhenCardLeavesViewport);
+    };
+  }, [commentAuthModalMessage]);
 
   function submitComment() {
+    if (!isSignedIn) {
+      setCommentAuthModalMessage(SIGN_IN_REQUIRED_COMMENT_MESSAGE);
+      return;
+    }
+
     const trimmed = commentInput.trim();
     if (!trimmed) {
       return;
@@ -217,14 +343,27 @@ export function FeedCard({ post, rankScore, rankLabel = "Popularity" }: FeedCard
       ...prev
     ]);
     setCommentInput("");
-    setCommentsOpen(true);
+    setCommentAuthModalMessage(null);
+    setActiveLeftAction("comments");
+  }
+
+  function toggleLeftAction(next: Exclude<LeftActionState, null>) {
+    setActiveLeftAction((current) => (current === next ? null : next));
   }
 
   function toggleReaction(next: Exclude<ReactionState, null>) {
+    if (!isSignedIn) {
+      setCommentAuthModalMessage(SIGN_IN_REQUIRED_VOTE_MESSAGE);
+      return;
+    }
     setReactionState((current) => (current === next ? null : next));
   }
 
   function toggleCommentReaction(commentId: string, next: CommentReaction) {
+    if (!isSignedIn) {
+      setCommentAuthModalMessage(SIGN_IN_REQUIRED_COMMENT_REACTION_MESSAGE);
+      return;
+    }
     setThreadComments((prev) =>
       prev.map((comment) =>
         comment.id === commentId
@@ -249,6 +388,10 @@ export function FeedCard({ post, rankScore, rankLabel = "Popularity" }: FeedCard
   }
 
   function toggleReplyReaction(commentId: string, replyId: string, next: CommentReaction) {
+    if (!isSignedIn) {
+      setCommentAuthModalMessage(SIGN_IN_REQUIRED_COMMENT_REACTION_MESSAGE);
+      return;
+    }
     setThreadComments((prev) =>
       prev.map((comment) =>
         comment.id === commentId
@@ -276,6 +419,11 @@ export function FeedCard({ post, rankScore, rankLabel = "Popularity" }: FeedCard
   }
 
   function submitReply(commentId: string) {
+    if (!isSignedIn) {
+      setCommentAuthModalMessage(SIGN_IN_REQUIRED_COMMENT_MESSAGE);
+      return;
+    }
+
     const draft = replyDraftByComment[commentId] ?? "";
     const trimmed = draft.trim();
     if (!trimmed) {
@@ -317,26 +465,74 @@ export function FeedCard({ post, rankScore, rankLabel = "Popularity" }: FeedCard
       ...prev,
       [commentId]: false
     }));
+    setCommentAuthModalMessage(null);
   }
 
   return (
-    <article className="panel feed-card reveal">
+    <article ref={cardRef} className="panel feed-card reveal">
       <header className="feed-card__header">
         <div className="feed-card__author">
-          <h3>{post.author}</h3>
-          <p className="feed-card__meta">
-            {post.handle} • {post.createdAt}
+          <p className="feed-card__author-line">
+            <span className="feed-card__author-name">{post.author}</span>
+            <span className="feed-card__meta">
+              {post.handle} • {post.createdAt}
+            </span>
           </p>
         </div>
-        {rankScore !== undefined ? (
-          <span className="rank-pill">
-            {rankLabel} {rankScore.toFixed(1)}
-          </span>
-        ) : null}
+        <div className="feed-card__meta-actions">
+          <button
+            type="button"
+            className={isSaved ? "save-post-button is-saved" : "save-post-button"}
+            onClick={() => onToggleSave(post.id)}
+            aria-label={isSaved ? "Unsave post" : "Save post"}
+            title={isSaved ? "Unsave" : "Save"}
+          >
+            <SaveIcon />
+          </button>
+          {rankScore !== undefined ? (
+            <span className="rank-pill">
+              {rankLabel} {rankScore.toFixed(1)}
+            </span>
+          ) : null}
+        </div>
       </header>
-      <p className="feed-card__caption">{post.caption}</p>
+      <p className="feed-card__caption">{displayCaption}</p>
+      {hasTranslationForNative ? (
+        <div className="feed-card__pre-media-controls">
+          <div className="post-language-inline">
+            <div className="post-language-slider" role="group" aria-label="Post language mode">
+              <button
+                type="button"
+                className={
+                  effectiveLanguageMode === "native"
+                    ? "post-language-slider__option is-active"
+                    : "post-language-slider__option"
+                }
+                onClick={() => setLanguageMode("native")}
+                title={`Translate to ${nativeLanguage}`}
+              >
+                {nativeLanguage}
+              </button>
+              <button
+                type="button"
+                className={
+                  effectiveLanguageMode === "original"
+                    ? "post-language-slider__option is-active"
+                    : "post-language-slider__option"
+                }
+                onClick={() => setLanguageMode("original")}
+                title="Show original"
+              >
+                Original
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       <div className="feed-card__media">
-        {post.videoUrl ? (
+        {post.videoUrl && (post.mediaType === "gif" || post.mediaType === "png") ? (
+          <img src={post.videoUrl} alt={post.caption} loading="lazy" />
+        ) : post.videoUrl ? (
           <video src={post.videoUrl} controls playsInline />
         ) : post.posterUrl ? (
           <img src={post.posterUrl} alt={post.caption} loading="lazy" />
@@ -350,7 +546,7 @@ export function FeedCard({ post, rankScore, rankLabel = "Popularity" }: FeedCard
           <button
             className={`action-stat action-stat--button ${commentsOpen ? "is-active" : ""}`}
             type="button"
-            onClick={() => setCommentsOpen((current) => !current)}
+            onClick={() => toggleLeftAction("comments")}
             aria-label="Open comments"
           >
             <span className="action-stat__icon">
@@ -361,7 +557,7 @@ export function FeedCard({ post, rankScore, rankLabel = "Popularity" }: FeedCard
           <button
             className={`action-stat action-stat--button ${reposted ? "is-active" : ""}`}
             type="button"
-            onClick={() => setReposted((current) => !current)}
+            onClick={() => toggleLeftAction("repost")}
             aria-label="Toggle repost"
           >
             <span className="action-stat__icon">
@@ -372,7 +568,7 @@ export function FeedCard({ post, rankScore, rankLabel = "Popularity" }: FeedCard
           <button
             className={`action-stat action-stat--button action-stat--quiet ${viewsOpen ? "is-active" : ""}`}
             type="button"
-            onClick={() => setViewsOpen((current) => !current)}
+            onClick={() => toggleLeftAction("views")}
             aria-label="Toggle views details"
           >
             <span className="action-stat__icon">
@@ -438,8 +634,14 @@ export function FeedCard({ post, rankScore, rankLabel = "Popularity" }: FeedCard
                 onChange={(event) => setCommentInput(event.target.value)}
               />
               <div className="yt-compose__actions">
-                <button type="button" className="yt-button-secondary" onClick={() => setCommentInput("")}>
-                  Cancel
+                <button
+                  type="button"
+                  className="yt-button-secondary yt-button-icon"
+                  onClick={() => setCommentInput("")}
+                  aria-label="Clear comment draft"
+                  title="Clear comment"
+                >
+                  <TrashIcon />
                 </button>
                 <button type="button" className="yt-button-primary" onClick={submitComment}>
                   Comment
@@ -474,6 +676,7 @@ export function FeedCard({ post, rankScore, rankLabel = "Popularity" }: FeedCard
                         onClick={() => toggleCommentReaction(comment.id, "down")}
                       >
                         <ThumbDownIcon />
+                        <span>{formatCompact(comment.dislikes + (comment.reaction === "down" ? 1 : 0))}</span>
                       </button>
                       <button
                         className="yt-comment-action yt-comment-action--text"
@@ -551,10 +754,42 @@ export function FeedCard({ post, rankScore, rankLabel = "Popularity" }: FeedCard
         </section>
       ) : null}
 
+      {commentAuthModalMessage ? (
+        <div
+          className="auth-modal-backdrop"
+          role="presentation"
+          onClick={() => setCommentAuthModalMessage(null)}
+        >
+          <div
+            className="auth-modal panel"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Sign in required"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h4>Sign in required</h4>
+            <p>{commentAuthModalMessage}</p>
+            <div className="auth-modal__actions">
+              <button
+                type="button"
+                className="yt-button-primary"
+                onClick={() => setCommentAuthModalMessage(null)}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <footer className="feed-card__footer">
         <span className="country-with-flag">
           <span>{post.countryName}</span>
           <span aria-hidden="true">{countryFlagFromIso2(post.countryCode)}</span>
+        </span>
+        <span className="country-support-indicator">
+          Country approval:{" "}
+          {countryApprovalPercent === null ? "n/a" : `${countryApprovalPercent.toFixed(3)}%`}
         </span>
         <span className="controversy-indicator">{approvalPercent.toFixed(3)}% approval</span>
       </footer>
