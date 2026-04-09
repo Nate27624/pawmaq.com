@@ -883,7 +883,7 @@ export default function App() {
       <header className="top-bar reveal">
         <div>
           <p className="top-bar__title">Pawmaq Feed</p>
-          <p className="top-bar__subtitle">Cross between pulse-driven X streams and video-native channels.</p>
+          <p className="top-bar__subtitle">Short posts and clips from the people and places you choose.</p>
         </div>
         <div className="top-bar__actions">
           <ThemeToggle mode={themeMode} onToggle={toggleTheme} />
@@ -918,7 +918,7 @@ export default function App() {
             />
           ) : null}
 
-          <section className="panel feed-tools reveal">
+          <section className="feed-tools reveal">
             <button
               type="button"
               className={timeWindow === "10m" ? "feed-tools__chip is-active" : "feed-tools__chip"}
