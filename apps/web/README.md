@@ -4,11 +4,14 @@ Frontend UI prototype for pawmaq:
 
 - dark/light mode toggle
 - X + YouTube-inspired layout
-- local video upload composer
-- World tab with popularity-ranked feed and proportional country support map
-- Controversial tab with conflicting-report ranking and worst-vote ranking
-- Current frontend upload limit: `200MB` total per post (`text + media`)
-- Optional Google sign-in for posting, commenting, and media upload
+- feed tabs: `Following`, `World`
+- time windows: `10 min`, `1 hr`, `12 hrs`, `24 hrs`, `1 week`, `1 month`, `3 months`, `1 year`
+- world map-based country filter in `World`
+- sort mode in account settings: `Most likes` or `Highest approval`
+- text-only posts or optional media uploads (`video`, `gif`, `png`)
+- `.jpg` and `.jpeg` uploads auto-convert to `.png` in-browser
+- upload budget: `200MB` total per post (`text + media`)
+- optional Google sign-in for posting, commenting, voting, and media upload
 
 ## Run
 

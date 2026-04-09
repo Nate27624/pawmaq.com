@@ -2,9 +2,6 @@ import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import type { ThemeMode } from "../types";
 
-type ApprovalAlgorithm = "weighted" | "wilson" | "bayesian";
-type ApprovalShuffle = "none" | "low" | "medium" | "high";
-
 interface AccountMenuProps {
   mode: ThemeMode;
   isSignedIn: boolean;
@@ -18,12 +15,8 @@ interface AccountMenuProps {
   authStatusMessage: string | null;
   nativeLanguage: string;
   onNativeLanguageChange: (language: string) => void;
-  approvalAlgorithm: ApprovalAlgorithm;
-  onApprovalAlgorithmChange: (algorithm: ApprovalAlgorithm) => void;
-  targetApproval: number;
-  onTargetApprovalChange: (target: number) => void;
-  approvalShuffle: ApprovalShuffle;
-  onApprovalShuffleChange: (shuffle: ApprovalShuffle) => void;
+  feedSortMode: "likes" | "approval";
+  onFeedSortModeChange: (mode: "likes" | "approval") => void;
   savedCount: number;
 }
 
@@ -59,12 +52,8 @@ export function AccountMenu({
   authStatusMessage,
   nativeLanguage,
   onNativeLanguageChange,
-  approvalAlgorithm,
-  onApprovalAlgorithmChange,
-  targetApproval,
-  onTargetApprovalChange,
-  approvalShuffle,
-  onApprovalShuffleChange,
+  feedSortMode,
+  onFeedSortModeChange,
   savedCount
 }: AccountMenuProps) {
   const [open, setOpen] = useState(false);
@@ -172,55 +161,38 @@ export function AccountMenu({
                   </div>
                 </div>
                 <div className="account-menu__profile">
-                  <label>
-                    Native language
-                    <select
-                      value={nativeLanguage}
-                      onChange={(event) => onNativeLanguageChange(event.target.value)}
-                    >
-                      {NATIVE_LANGUAGE_OPTIONS.map((language) => (
-                        <option key={language} value={language}>
+                  <section className="account-menu__section">
+                    <h4>Preferences</h4>
+                    <label>
+                      Native language
+                      <select
+                        value={nativeLanguage}
+                        onChange={(event) => onNativeLanguageChange(event.target.value)}
+                      >
+                        {NATIVE_LANGUAGE_OPTIONS.map((language) => (
+                          <option key={language} value={language}>
                           {language}
                         </option>
-                      ))}
+                        ))}
                     </select>
                   </label>
                   <label>
-                    Approval algorithm
+                    Feed sort
                     <select
-                      value={approvalAlgorithm}
-                      onChange={(event) => onApprovalAlgorithmChange(event.target.value as ApprovalAlgorithm)}
+                      value={feedSortMode}
+                      onChange={(event) =>
+                        onFeedSortModeChange(event.target.value === "approval" ? "approval" : "likes")
+                      }
                     >
-                      <option value="weighted">Weighted Ratio (OSS)</option>
-                      <option value="wilson">Wilson Lower Bound (OSS)</option>
-                      <option value="bayesian">Bayesian Prior (OSS)</option>
+                      <option value="likes">Most likes</option>
+                      <option value="approval">Highest approval</option>
                     </select>
                   </label>
-                  <label>
-                    Approval target (100% to 0%)
-                    <input
-                      type="range"
-                      min={0}
-                      max={100}
-                      step={0.1}
-                      value={100 - targetApproval}
-                      onChange={(event) => onTargetApprovalChange(100 - Number(event.target.value))}
-                    />
-                  </label>
-                  <label>
-                    Shuffle amount
-                    <select
-                      value={approvalShuffle}
-                      onChange={(event) => onApprovalShuffleChange(event.target.value as ApprovalShuffle)}
-                    >
-                      <option value="none">None</option>
-                      <option value="low">Low (±2%)</option>
-                      <option value="medium">Medium (±5%)</option>
-                      <option value="high">High (±10%)</option>
-                    </select>
-                  </label>
-                  <p className="account-menu__meta">Target: {targetApproval.toFixed(1)}%</p>
-                  <p className="account-menu__meta">Saved posts: {savedCount}</p>
+                  </section>
+
+                  <div className="account-menu__meta-row">
+                    <p className="account-menu__meta">Saved posts: {savedCount}</p>
+                  </div>
                 </div>
               </div>
             </div>,

@@ -13,8 +13,7 @@ import type { FeedPost, FeedTab, ThemeMode } from "./types";
 
 const FOLLOWING_HANDLES = new Set(["@linapark", "@mayachow"]);
 type TimeWindow = "10m" | "1h" | "12h" | "24h" | "1w" | "1m" | "3m" | "1y";
-type ApprovalAlgorithm = "weighted" | "wilson" | "bayesian";
-type ApprovalShuffle = "none" | "low" | "medium" | "high";
+type FeedSortMode = "likes" | "approval";
 
 const TIME_WINDOW_MAX_HOURS: Record<TimeWindow, number> = {
   "10m": 10 / 60,
@@ -46,13 +45,6 @@ const TIME_WINDOW_CHOICES: Array<{ key: TimeWindow; label: string }> = [
   { key: "3m", label: "3 months" },
   { key: "1y", label: "1 year" }
 ];
-
-const SHUFFLE_JITTER_PERCENT: Record<ApprovalShuffle, number> = {
-  none: 0,
-  low: 2,
-  medium: 5,
-  high: 10
-};
 
 const SEEN_POST_HASHES_KEY = "pawmaq-account-seen-post-hashes";
 const SIGNED_IN_KEY = "pawmaq-account-signed-in";
@@ -536,71 +528,25 @@ function isPostInTimeWindow(post: FeedPost, timeWindow: TimeWindow, referenceTim
 }
 
 function postLikeScore(post: FeedPost): number {
-  return post.upvotes - post.downvotes;
+  return post.upvotes;
 }
 
-function getCountrySupportRatio(countryCode: string): number {
-  const country = worldSupportData.find((entry) => entry.iso2 === countryCode);
-  if (!country) {
-    return 0;
-  }
-  return country.supporters / country.population;
+function postApprovalScore(post: FeedPost): number {
+  return approvalPercentFromVotes(post.upvotes, post.neutralVotes, post.downvotes);
 }
 
 function clampPercent(value: number): number {
   return Math.min(100, Math.max(0, value));
 }
 
-function approvalPercentFromVotes(
-  algorithm: ApprovalAlgorithm,
-  upvotes: number,
-  neutralVotes: number,
-  downvotes: number
-): number {
+function approvalPercentFromVotes(upvotes: number, neutralVotes: number, downvotes: number): number {
   const totalVotes = upvotes + neutralVotes + downvotes;
   if (totalVotes <= 0) {
     return 50;
   }
 
   const weightedPositive = upvotes + neutralVotes * 0.5;
-  const weightedRatio = weightedPositive / totalVotes;
-
-  if (algorithm === "weighted") {
-    return clampPercent(weightedRatio * 100);
-  }
-
-  if (algorithm === "wilson") {
-    const z = 1.96;
-    const denominator = 1 + (z * z) / totalVotes;
-    const center = weightedRatio + (z * z) / (2 * totalVotes);
-    const margin =
-      (z * Math.sqrt((weightedRatio * (1 - weightedRatio) + (z * z) / (4 * totalVotes)) / totalVotes)) /
-      denominator;
-    return clampPercent(((center / denominator) - margin) * 100);
-  }
-
-  const priorWeight = 20;
-  const priorMean = 0.5;
-  return clampPercent(((weightedPositive + priorWeight * priorMean) / (totalVotes + priorWeight)) * 100);
-}
-
-function approvalPercentForPost(post: FeedPost, algorithm: ApprovalAlgorithm): number {
-  return approvalPercentFromVotes(algorithm, post.upvotes, post.neutralVotes, post.downvotes);
-}
-
-function deterministicNoise(seed: number, value: string): number {
-  let hash = seed;
-  for (let index = 0; index < value.length; index += 1) {
-    hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
-  }
-  return (hash / 0xffffffff) * 2 - 1;
-}
-
-function popularityScore(post: FeedPost): number {
-  const engagement =
-    post.likes * 1 + post.comments * 2 + post.reposts * 2.8 + post.views * 0.04;
-  const ratioBoost = getCountrySupportRatio(post.countryCode) * 500;
-  return engagement / 1000 + ratioBoost;
+  return clampPercent((weightedPositive / totalVotes) * 100);
 }
 
 function preferredTheme(): ThemeMode {
@@ -621,14 +567,12 @@ export default function App() {
   const [authStatusMessage, setAuthStatusMessage] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<FeedTab>("following");
   const [nativeLanguage, setNativeLanguage] = useState<string>(preferredNativeLanguage);
-  const [approvalAlgorithm, setApprovalAlgorithm] = useState<ApprovalAlgorithm>("weighted");
-  const [targetApproval, setTargetApproval] = useState<number>(70);
-  const [approvalShuffle, setApprovalShuffle] = useState<ApprovalShuffle>("none");
-  const [shuffleSeed] = useState<number>(() => Math.floor(Math.random() * 1_000_000_000));
   const [timeWindow, setTimeWindow] = useState<TimeWindow>("24h");
+  const [feedSortMode, setFeedSortMode] = useState<FeedSortMode>("likes");
   const [timeWindowSnapshotMs, setTimeWindowSnapshotMs] = useState<number>(() => Date.now());
   const [savedOnly, setSavedOnly] = useState(false);
   const [countryFilter, setCountryFilter] = useState<string>("all");
+  const [allCountriesMode, setAllCountriesMode] = useState(true);
   const [lastSelectedCountryCode, setLastSelectedCountryCode] = useState<string | null>(readLastSelectedCountryCode);
   const [savedPostIds, setSavedPostIds] = useState<Set<string>>(readSavedPostIds);
   const [seenPostHashes, setSeenPostHashes] = useState<Set<string>>(readSeenPostHashes);
@@ -750,52 +694,63 @@ export default function App() {
     for (const [countryCode, votes] of voteTotalsByCountry) {
       approvalByCountry.set(
         countryCode,
-        approvalPercentFromVotes(
-          approvalAlgorithm,
-          votes.upvotes,
-          votes.neutralVotes,
-          votes.downvotes
-        )
+        approvalPercentFromVotes(votes.upvotes, votes.neutralVotes, votes.downvotes)
       );
     }
     return approvalByCountry;
-  }, [posts, approvalAlgorithm]);
-
-  const countryFilterOptions = useMemo(() => {
-    const namesByCode = isoCountries.getNames("en", { select: "official" }) as Record<string, string>;
-    return Object.entries(namesByCode)
-      .map(([iso2, country]) => ({ iso2, country }))
-      .sort((left, right) => left.country.localeCompare(right.country));
-  }, []);
-
-  const lastSelectedCountryOption = useMemo(() => {
-    if (!lastSelectedCountryCode) {
-      return null;
-    }
-    return countryFilterOptions.find((country) => country.iso2 === lastSelectedCountryCode) ?? null;
-  }, [countryFilterOptions, lastSelectedCountryCode]);
+  }, [posts]);
 
   function handleCountryFilterChange(countryCode: string) {
     setCountryFilter(countryCode);
     if (countryCode !== "all") {
+      setAllCountriesMode(false);
       setLastSelectedCountryCode(countryCode);
       if (typeof window !== "undefined") {
         window.localStorage.setItem(LAST_SELECTED_COUNTRY_KEY, countryCode);
       }
+    } else {
+      setAllCountriesMode(true);
     }
   }
 
-  function applyLastSelectedCountry() {
-    if (!lastSelectedCountryCode) {
+  function handleAllCountriesModeToggle(next: boolean) {
+    if (next) {
+      handleCountryFilterChange("all");
       return;
     }
-    setCountryFilter(lastSelectedCountryCode);
+    setAllCountriesMode(false);
   }
 
   function selectTimeWindow(nextWindow: TimeWindow) {
     setTimeWindow(nextWindow);
     setTimeWindowSnapshotMs(Date.now());
   }
+
+  function handleTabChange(nextTab: FeedTab) {
+    if (nextTab === activeTab) {
+      return;
+    }
+    if (activeTab === "world" && nextTab === "following" && typeof window !== "undefined") {
+      window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+    }
+    setActiveTab(nextTab);
+  }
+
+  const countryNamesByCode = useMemo(
+    () => isoCountries.getNames("en", { select: "official" }) as Record<string, string>,
+    []
+  );
+
+  const activeCountryFilterLabel = useMemo(() => {
+    if (activeTab !== "world" || countryFilter === "all") {
+      return null;
+    }
+    return (
+      countryNamesByCode[countryFilter] ??
+      worldSupportData.find((country) => country.iso2 === countryFilter)?.country ??
+      countryFilter
+    );
+  }, [activeTab, countryFilter, countryNamesByCode]);
 
   const rankedCandidates = useMemo(() => {
     const filteredByTime = posts.filter((post) =>
@@ -822,12 +777,12 @@ export default function App() {
     const deduped = uniquePosts(basePosts);
 
     return [...deduped].sort((left, right) => {
-      const leftScore = postLikeScore(left);
-      const rightScore = postLikeScore(right);
+      const leftScore = feedSortMode === "approval" ? postApprovalScore(left) : postLikeScore(left);
+      const rightScore = feedSortMode === "approval" ? postApprovalScore(right) : postLikeScore(right);
       if (leftScore !== rightScore) {
         return rightScore - leftScore;
       }
-      if (left.upvotes !== right.upvotes) {
+      if (feedSortMode === "approval" && left.upvotes !== right.upvotes) {
         return right.upvotes - left.upvotes;
       }
       if (left.downvotes !== right.downvotes) {
@@ -839,6 +794,7 @@ export default function App() {
     activeTab,
     posts,
     timeWindow,
+    feedSortMode,
     timeWindowSnapshotMs,
     savedOnly,
     countryFilter,
@@ -847,8 +803,8 @@ export default function App() {
 
   const feedContextKey = useMemo(
     () =>
-      `${activeTab}|${timeWindow}|${timeWindowSnapshotMs}|${savedOnly ? "saved" : "all"}|${activeTab === "world" ? countryFilter : "all"}`,
-    [activeTab, timeWindow, timeWindowSnapshotMs, savedOnly, countryFilter]
+      `${activeTab}|${timeWindow}|${feedSortMode}|${timeWindowSnapshotMs}|${savedOnly ? "saved" : "all"}|${activeTab === "world" ? countryFilter : "all"}`,
+    [activeTab, timeWindow, feedSortMode, timeWindowSnapshotMs, savedOnly, countryFilter]
   );
 
   const loadMorePosts = useCallback(() => {
@@ -941,56 +897,28 @@ export default function App() {
             authStatusMessage={authStatusMessage}
             nativeLanguage={nativeLanguage}
             onNativeLanguageChange={updateNativeLanguage}
-            approvalAlgorithm={approvalAlgorithm}
-            onApprovalAlgorithmChange={setApprovalAlgorithm}
-            targetApproval={targetApproval}
-            onTargetApprovalChange={setTargetApproval}
-            approvalShuffle={approvalShuffle}
-            onApprovalShuffleChange={setApprovalShuffle}
+            feedSortMode={feedSortMode}
+            onFeedSortModeChange={setFeedSortMode}
             savedCount={savedPostIds.size}
           />
         </div>
       </header>
 
       <div className="layout-grid">
-        <SideNav activeTab={activeTab} onTabChange={setActiveTab} />
+        <SideNav activeTab={activeTab} onTabChange={handleTabChange} />
 
         <main className="main-column">
           {activeTab === "world" ? (
             <WorldSupportMap
               countries={worldSupportData}
               selectedCountryCode={countryFilter === "all" ? null : countryFilter}
+              allCountriesMode={allCountriesMode}
+              onToggleAllCountriesMode={handleAllCountriesModeToggle}
               onCountrySelect={handleCountryFilterChange}
-              onClearCountry={() => handleCountryFilterChange("all")}
             />
           ) : null}
 
           <section className="panel feed-tools reveal">
-            {activeTab === "world" ? (
-              <label className="feed-tools__country">
-                Country
-                <select
-                  value={countryFilter}
-                  onChange={(event) => handleCountryFilterChange(event.target.value)}
-                >
-                  <option value="all">All countries</option>
-                  {countryFilterOptions.map((country) => (
-                    <option key={country.iso2} value={country.iso2}>
-                      {country.country}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            ) : null}
-            {activeTab === "world" && lastSelectedCountryOption ? (
-              <button
-                type="button"
-                className="feed-tools__chip"
-                onClick={applyLastSelectedCountry}
-              >
-                {lastSelectedCountryOption.country}
-              </button>
-            ) : null}
             <button
               type="button"
               className={timeWindow === "10m" ? "feed-tools__chip is-active" : "feed-tools__chip"}
@@ -1034,6 +962,23 @@ export default function App() {
             googleSignInEnabled={googleSignInEnabled}
           />
 
+          {activeCountryFilterLabel ? (
+            <div className="feed-country-context reveal" role="status" aria-live="polite">
+              <span className="feed-country-context__label">World filter</span>
+              <strong className="feed-country-context__country">{activeCountryFilterLabel}</strong>
+              <span className="feed-country-context__hint">
+                You are viewing posts only from this country.
+              </span>
+              <button
+                type="button"
+                className="feed-country-context__clear"
+                onClick={() => handleCountryFilterChange("all")}
+              >
+                Show all
+              </button>
+            </div>
+          ) : null}
+
           <section className="feed-list">
             {queuedPosts.map((post) => (
               <FeedCard
@@ -1043,14 +988,15 @@ export default function App() {
                 isSaved={savedPostIds.has(post.id)}
                 onToggleSave={toggleSavedPost}
                 isSignedIn={isSignedIn}
-                approvalAlgorithm={approvalAlgorithm}
                 countryApprovalPercent={countryApprovalByCode.get(post.countryCode) ?? null}
                 rankScore={
                   activeTab === "world"
-                    ? postLikeScore(post)
+                    ? feedSortMode === "approval"
+                      ? postApprovalScore(post)
+                      : post.upvotes
                     : undefined
                 }
-                rankLabel="Like score"
+                rankLabel={feedSortMode === "approval" ? "Approval" : "Likes"}
               />
             ))}
             <div className="feed-end-sentinel" ref={loadMoreRef} />

@@ -7,7 +7,6 @@ interface FeedCardProps {
   isSaved: boolean;
   onToggleSave: (postId: string) => void;
   isSignedIn: boolean;
-  approvalAlgorithm: ApprovalAlgorithm;
   countryApprovalPercent: number | null;
   rankScore?: number;
   rankLabel?: string;
@@ -73,7 +72,6 @@ type ReactionState = "up" | "neutral" | "down" | null;
 type CommentReaction = "up" | "down" | null;
 type PostLanguageMode = "native" | "original";
 type LeftActionState = "comments" | "repost" | "views" | null;
-type ApprovalAlgorithm = "weighted" | "wilson" | "bayesian";
 const SIGN_IN_REQUIRED_COMMENT_MESSAGE =
   "Sorry for the inconvenience, you need to sign in to comment. This helps keep the number of bots at a minimum.";
 const SIGN_IN_REQUIRED_VOTE_MESSAGE =
@@ -198,42 +196,25 @@ function formatLikeCompact(value: number): string {
   });
 }
 
+function formatRankMetric(label: string, value: number): string {
+  if (label.toLowerCase() === "approval") {
+    return `${value.toFixed(3)}%`;
+  }
+  return Math.round(value).toLocaleString();
+}
+
 function clampPercent(value: number): number {
   return Math.min(100, Math.max(0, value));
 }
 
-function approvalPercentFromAlgorithm(
-  algorithm: ApprovalAlgorithm,
-  upvotes: number,
-  neutralVotes: number,
-  downvotes: number
-): number {
+function approvalPercentFromVotes(upvotes: number, neutralVotes: number, downvotes: number): number {
   const totalVotes = upvotes + neutralVotes + downvotes;
   if (totalVotes <= 0) {
     return 50;
   }
 
   const weightedPositive = upvotes + neutralVotes * 0.5;
-  const weightedRatio = weightedPositive / totalVotes;
-
-  if (algorithm === "weighted") {
-    return clampPercent(weightedRatio * 100);
-  }
-
-  if (algorithm === "wilson") {
-    const z = 1.96;
-    const denominator = 1 + (z * z) / totalVotes;
-    const center = weightedRatio + (z * z) / (2 * totalVotes);
-    const margin =
-      (z * Math.sqrt((weightedRatio * (1 - weightedRatio) + (z * z) / (4 * totalVotes)) / totalVotes)) /
-      denominator;
-    return clampPercent(((center / denominator) - margin) * 100);
-  }
-
-  // Bayesian smoothing with a neutral prior centered at 50%.
-  const priorWeight = 20;
-  const priorMean = 0.5;
-  return clampPercent(((weightedPositive + priorWeight * priorMean) / (totalVotes + priorWeight)) * 100);
+  return clampPercent((weightedPositive / totalVotes) * 100);
 }
 
 function countryFlagFromIso2(code: string): string {
@@ -253,7 +234,6 @@ export function FeedCard({
   isSaved,
   onToggleSave,
   isSignedIn,
-  approvalAlgorithm,
   countryApprovalPercent,
   rankScore,
   rankLabel = "Popularity"
@@ -277,7 +257,7 @@ export function FeedCard({
   const upvoteCount = post.upvotes + (reactionState === "up" ? 1 : 0);
   const neutralCount = post.neutralVotes + (reactionState === "neutral" ? 1 : 0);
   const downvoteCount = post.downvotes + (reactionState === "down" ? 1 : 0);
-  const approvalPercent = approvalPercentFromAlgorithm(approvalAlgorithm, upvoteCount, neutralCount, downvoteCount);
+  const approvalPercent = approvalPercentFromVotes(upvoteCount, neutralCount, downvoteCount);
   const translatedCaption = post.translatedCaptions?.[nativeLanguage];
   const originalMatchesNative =
     nativeLanguage.trim().toLowerCase() === post.originalLanguage.trim().toLowerCase();
@@ -491,7 +471,7 @@ export function FeedCard({
           </button>
           {rankScore !== undefined ? (
             <span className="rank-pill">
-              {rankLabel} {rankScore.toFixed(1)}
+              {rankLabel} {formatRankMetric(rankLabel, rankScore)}
             </span>
           ) : null}
         </div>
