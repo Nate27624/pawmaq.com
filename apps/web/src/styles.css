@@ -551,9 +551,57 @@ body {
 }
 
 .account-menu__profile {
-  margin-top: 10px;
+  margin-top: 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.account-menu__section {
+  border: 1px solid var(--account-panel-border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--account-panel-surface) 88%, transparent);
+  padding: 10px;
   display: grid;
   gap: 8px;
+}
+
+.account-menu__section h4 {
+  margin: 0;
+  font-size: 0.76rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--account-panel-muted);
+  font-family: var(--font-display);
+}
+
+.account-menu__section--target {
+  background: linear-gradient(
+    120deg,
+    color-mix(in srgb, var(--account-panel-accent) 12%, transparent),
+    color-mix(in srgb, var(--account-panel-surface) 92%, transparent)
+  );
+}
+
+.account-menu__section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--account-panel-text);
+  font-size: 0.83rem;
+  font-weight: 700;
+}
+
+.account-menu__section-head strong {
+  color: var(--account-panel-accent);
+  font-size: 0.84rem;
+}
+
+.account-menu__section-note {
+  margin: 0;
+  color: var(--account-panel-muted);
+  font-size: 0.76rem;
+  line-height: 1.35;
 }
 
 .account-menu__profile label {
@@ -589,6 +637,12 @@ body {
   margin: 0;
   color: var(--account-panel-muted);
   font-size: 0.8rem;
+}
+
+.account-menu__meta-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
 }
 
 .account-menu__auth-status {
@@ -759,6 +813,17 @@ body {
   font-size: 1.05rem;
 }
 
+.world-map__header-top {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
+}
+
+.world-map__header-top h2 {
+  margin: 0;
+}
+
 .world-map__header p {
   margin: 6px 0 0;
   color: var(--text-muted);
@@ -800,6 +865,11 @@ body {
   background: var(--surface-muted);
 }
 
+.world-map__collapsed-note {
+  margin: 10px 0 0;
+  color: var(--text-muted);
+}
+
 .country-list {
   list-style: none;
   margin: 12px 0 0;
@@ -838,6 +908,62 @@ body {
 .feed-list {
   display: grid;
   gap: 12px;
+}
+
+.feed-country-context {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
+  border-radius: 8px;
+  background:
+    linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--accent) 10%, transparent),
+      color-mix(in srgb, var(--surface-muted) 88%, transparent)
+    );
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.feed-country-context__label {
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.feed-country-context__country {
+  font-family: var(--font-display);
+  font-size: 0.9rem;
+  color: var(--text-main);
+}
+
+.feed-country-context__hint {
+  color: var(--text-muted);
+  font-size: 0.82rem;
+}
+
+.feed-country-context__clear {
+  -webkit-appearance: none;
+  appearance: none;
+  margin-left: auto;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-main);
+  border-radius: 999px;
+  height: 28px;
+  padding: 0 10px;
+  font-family: var(--font-display);
+  font-size: 0.74rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.feed-country-context__clear:hover {
+  background: var(--surface-muted);
 }
 
 .feed-end-sentinel {

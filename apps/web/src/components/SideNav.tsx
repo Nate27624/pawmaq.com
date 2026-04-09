@@ -44,9 +44,6 @@ export function SideNav({
           World
         </button>
       </nav>
-      <div className="side-note">
-        <p>World ranks by popularity and country support.</p>
-      </div>
     </aside>
   );
 }

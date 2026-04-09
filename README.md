@@ -26,15 +26,29 @@ Build a free, open-source community platform that combines:
 
 ## Workspace
 
-- `apps/web`: frontend UI (X + YouTube inspired feed, world tab, video upload)
+- `apps/web`: frontend UI (X + YouTube inspired feed, world tab, video/gif/png posting)
 - `apps/api`: backend API scaffold with moderation pipeline interface
 - `docs/`: architecture and delivery docs
+
+## Current Frontend State
+
+- Feed tabs: `Following` and `World`
+- Time windows: `10 min`, `1 hr`, `12 hrs`, `24 hrs`, `1 week`, `1 month`, `3 months`, `1 year`
+- Sort mode is configured from the top-right account menu:
+  - `Most likes`
+  - `Highest approval`
+- World map is clickable for country filtering in `World` feed mode
+- Infinite scroll with client-side "seen post" tracking to avoid repeat posts
+- Composer supports text-only posts, plus optional `video`, `gif`, and `png` uploads
+- `.jpg`/`.jpeg` uploads are converted to `.png` in-browser
+- Post budget limit is `200MB` total (`text + media`)
+- Posting, commenting, voting, and media uploads require sign-in (Google OAuth supported)
 
 ## Local Development
 
 ```bash
 corepack pnpm install
-corepack pnpm dev
+corepack pnpm dev:web
 ```
 
 Then open:
