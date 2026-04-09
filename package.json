@@ -1,0 +1,14 @@
+{
+  "name": "pawmaq-platform",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@9.15.0",
+  "scripts": {
+    "dev": "corepack pnpm --filter @pawmaq/web dev",
+    "dev:api": "corepack pnpm --filter @pawmaq/api dev",
+    "dev:web": "corepack pnpm --filter @pawmaq/web dev",
+    "build": "corepack pnpm -r build",
+    "typecheck": "corepack pnpm -r typecheck",
+    "lint": "corepack pnpm -r lint"
+  }
+}
