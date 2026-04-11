@@ -15,6 +15,7 @@ Build a free, open-source community platform that combines:
 - [Platform Blueprint](docs/platform-blueprint.md)
 - [Open-Source AI Moderation Architecture](docs/ai-moderation-oss-architecture.md)
 - [Implementation Plan](docs/implementation-plan.md)
+- [Security Controls](docs/security-controls.md)
 
 ## Project Principles
 
@@ -43,11 +44,15 @@ Build a free, open-source community platform that combines:
 - `.jpg`/`.jpeg` uploads are converted to `.png` in-browser
 - Post budget limit is `200MB` total (`text + media`)
 - Posting, commenting, voting, and media uploads require sign-in (Google OAuth supported)
+- Hidden ledger route at `/ledger` (not linked in the main UI) with searchable profile + post ledger export
+- Interactive test dashboard at `/test-lab` for custom test users/posts/comments/replies and scenario execution
 
 ## Local Development
 
 ```bash
 corepack pnpm install
+corepack pnpm dev:api
+# in another terminal
 corepack pnpm dev:web
 ```
 
@@ -57,11 +62,42 @@ Then open:
 http://localhost:5173
 ```
 
-Run API separately if needed:
+`dev:api` is required for server-persisted profile customization and follow state.
+
+To run the automated API test-lab suite:
 
 ```bash
-corepack pnpm dev:api
+corepack pnpm test:lab
 ```
+
+To run the repository security checks:
+
+```bash
+corepack pnpm security:full
+```
+
+## Google Sign-In Setup
+
+1. Create a Web OAuth client in Google Cloud Console.
+2. Add authorized JavaScript origins:
+   - `http://localhost:5173` (web dev)
+   - your production web origin (for example `https://pawmaq.com`)
+3. Set environment variables:
+   - `VITE_GOOGLE_CLIENT_ID` in the web app env.
+   - `GOOGLE_OAUTH_CLIENT_IDS` in the API env (comma-separated allowlist).
+4. Configure persistent auth sessions:
+   - `AUTH_SESSION_STORE=redis`
+   - `REDIS_URL=redis://...`
+5. In production:
+   - `GOOGLE_OAUTH_CLIENT_IDS` is required.
+   - `AUTH_SESSION_STORE` must be `redis`.
+   - API startup fails fast if these are missing.
+
+Auth/session hardening now includes:
+- Google access token audience validation against `GOOGLE_OAUTH_CLIENT_IDS`.
+- Rate limiting for `POST /v1/auth/google/session`.
+- Redis-backed session persistence (survives API restarts).
+- Periodic session validity checks in the client with automatic sign-out on expiry.
 
 ## Notes
 

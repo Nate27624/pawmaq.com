@@ -8,11 +8,16 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test:lab": "tsx src/modules/test-lab/suite.ts",
     "lint": "echo \"lint not configured yet\""
   },
   "dependencies": {
-    "@fastify/cors": "^9.0.1",
-    "fastify": "^4.28.1",
+    "@fastify/cookie": "^11.0.2",
+    "@fastify/cors": "^11.2.0",
+    "@fastify/helmet": "^13.0.2",
+    "@fastify/multipart": "^10.0.0",
+    "fastify": "^5.8.4",
+    "redis": "^5.8.2",
     "zod": "^3.23.8"
   },
   "devDependencies": {

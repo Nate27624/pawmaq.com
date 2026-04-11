@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import isoCountries from "i18n-iso-countries";
 import enLocale from "i18n-iso-countries/langs/en.json";
+import { API_BASE_URL } from "../config/api";
 import type { CountrySupport } from "../types";
 
 interface PublishPayload {
@@ -10,6 +11,7 @@ interface PublishPayload {
   videoUrl?: string;
   mediaType?: "video" | "gif" | "png";
   originalLanguage?: string;
+  anonymous?: boolean;
 }
 
 interface VideoComposerProps {
@@ -20,23 +22,43 @@ interface VideoComposerProps {
   googleSignInEnabled: boolean;
 }
 
-const MAX_TOTAL_UPLOAD_BYTES = 200 * 1024 * 1024;
-const MAX_TOTAL_UPLOAD_MB = MAX_TOTAL_UPLOAD_BYTES / (1024 * 1024);
+const MAX_DAILY_UPLOAD_BYTES = 50 * 1024 * 1024;
+const MAX_DAILY_UPLOAD_MB = MAX_DAILY_UPLOAD_BYTES / (1024 * 1024);
 const MAX_DRAFT_PERSIST_BYTES = 1024 * 1024;
 const COMPOSER_DRAFT_KEY = "pawmaq-composer-draft-v1";
+const DAILY_UPLOAD_USAGE_KEY = "pawmaq-daily-upload-usage-v1";
 const SIGN_IN_REQUIRED_POST_MESSAGE =
   "Sorry for the inconvenience, you need to sign in to post. This helps keep the number of bots at a minimum.";
 const SIGN_IN_REQUIRED_UPLOAD_MESSAGE =
   "Sorry for the inconvenience, you need to sign in to upload media. This helps keep the number of bots at a minimum.";
+const DEFAULT_MEDIA_ACCEPT = "video/*,image/gif,image/png,image/jpeg,.jpg,.jpeg";
+const IMAGE_MEDIA_ACCEPT = "image/gif,image/png,image/jpeg,.jpg,.jpeg";
+const VIDEO_MEDIA_ACCEPT = "video/*";
 type LocationPrecision = "country" | "region" | "city";
+type PullMode = "text" | "link" | "image" | "video";
 
 interface ComposerDraftState {
   collapsed: boolean;
+  pullMode: PullMode;
   caption: string;
+  linkUrl: string;
+  postAnonymously: boolean;
   locationPrecision: LocationPrecision;
   countryInput: string;
   regionInput: string;
   cityInput: string;
+}
+
+interface DailyUploadUsageState {
+  day: string;
+  bytesUsed: number;
+}
+
+interface UploadedMediaPayload {
+  mediaId: string;
+  mediaUrl: string;
+  mimeType: string;
+  sizeBytes: number;
 }
 
 isoCountries.registerLocale(enLocale);
@@ -52,7 +74,10 @@ function TrashIcon() {
 function readComposerDraft(defaultCountry: string): ComposerDraftState {
   const fallback: ComposerDraftState = {
     collapsed: true,
+    pullMode: "text",
     caption: "",
+    linkUrl: "",
+    postAnonymously: false,
     locationPrecision: "country",
     countryInput: defaultCountry,
     regionInput: "",
@@ -70,13 +95,23 @@ function readComposerDraft(defaultCountry: string): ComposerDraftState {
 
   try {
     const parsed = JSON.parse(raw) as Partial<ComposerDraftState>;
+    const pullMode =
+      parsed.pullMode === "text" ||
+      parsed.pullMode === "link" ||
+      parsed.pullMode === "image" ||
+      parsed.pullMode === "video"
+        ? parsed.pullMode
+        : "text";
     const locationPrecision =
       parsed.locationPrecision === "region" || parsed.locationPrecision === "city"
         ? parsed.locationPrecision
         : "country";
     return {
       collapsed: typeof parsed.collapsed === "boolean" ? parsed.collapsed : true,
+      pullMode,
       caption: typeof parsed.caption === "string" ? parsed.caption : "",
+      linkUrl: typeof parsed.linkUrl === "string" ? parsed.linkUrl : "",
+      postAnonymously: parsed.postAnonymously === true,
       locationPrecision,
       countryInput:
         typeof parsed.countryInput === "string" && parsed.countryInput.trim().length > 0
@@ -161,6 +196,114 @@ function textByteLength(value: string): number {
   return new TextEncoder().encode(value).length;
 }
 
+function localDateKey(date: Date = new Date()): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function nextDailyResetLabel(now: Date = new Date()): string {
+  const next = new Date(now);
+  next.setHours(24, 0, 0, 0);
+  return next.toLocaleString(undefined, {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit"
+  });
+}
+
+function formatMegabytes(bytes: number): string {
+  const mb = bytes / (1024 * 1024);
+  return `${mb.toFixed(1).replace(/\.0$/, "")}MB`;
+}
+
+function readDailyUploadUsageState(): DailyUploadUsageState {
+  const today = localDateKey();
+  if (typeof window === "undefined") {
+    return { day: today, bytesUsed: 0 };
+  }
+
+  const raw = window.localStorage.getItem(DAILY_UPLOAD_USAGE_KEY);
+  if (!raw) {
+    return { day: today, bytesUsed: 0 };
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as Record<string, number>;
+    const bytes = parsed[today];
+    if (typeof bytes !== "number" || !Number.isFinite(bytes) || bytes < 0) {
+      return { day: today, bytesUsed: 0 };
+    }
+    return { day: today, bytesUsed: Math.floor(bytes) };
+  } catch {
+    return { day: today, bytesUsed: 0 };
+  }
+}
+
+function writeDailyUploadUsageState(state: DailyUploadUsageState): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  let nextRecord: Record<string, number> = {};
+  const raw = window.localStorage.getItem(DAILY_UPLOAD_USAGE_KEY);
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as Record<string, number>;
+      if (parsed && typeof parsed === "object") {
+        nextRecord = parsed;
+      }
+    } catch {
+      // Ignore malformed persisted data and rewrite.
+    }
+  }
+
+  nextRecord[state.day] = Math.max(0, Math.floor(state.bytesUsed));
+  window.localStorage.setItem(DAILY_UPLOAD_USAGE_KEY, JSON.stringify(nextRecord));
+}
+
+async function uploadMediaToApi(file: File): Promise<UploadedMediaPayload> {
+  const formData = new FormData();
+  formData.append("file", file, file.name);
+
+  const response = await fetch(`${API_BASE_URL}/v1/media/upload`, {
+    method: "POST",
+    credentials: "include",
+    body: formData
+  });
+
+  const payload = (await response.json().catch(() => null)) as
+    | UploadedMediaPayload
+    | { message?: string }
+    | null;
+
+  if (!response.ok || !payload || typeof payload !== "object") {
+    const message = payload && "message" in payload ? payload.message : "Unable to upload media.";
+    throw new Error(message ?? "Unable to upload media.");
+  }
+
+  if (
+    !("mediaUrl" in payload) ||
+    typeof payload.mediaUrl !== "string" ||
+    !("sizeBytes" in payload) ||
+    typeof payload.sizeBytes !== "number"
+  ) {
+    throw new Error("Media upload response was invalid.");
+  }
+
+  return payload as UploadedMediaPayload;
+}
+
+function autoResizeTextarea(textarea: HTMLTextAreaElement) {
+  const priorHeight = textarea.offsetHeight;
+  textarea.style.height = "auto";
+  const nextHeight = Math.max(textarea.scrollHeight, priorHeight);
+  textarea.style.height = `${nextHeight}px`;
+}
+
 function loadImage(url: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const image = new Image();
@@ -203,10 +346,14 @@ export function VideoComposer({
   googleSignInEnabled
 }: VideoComposerProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const linkInputRef = useRef<HTMLInputElement | null>(null);
+  const captionTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const defaultCountry = countries[0]?.country ?? "United States";
   const initialDraft = useMemo(() => readComposerDraft(defaultCountry), [defaultCountry]);
+  const initialDailyUsage = useMemo(readDailyUploadUsageState, []);
   const [collapsed, setCollapsed] = useState(initialDraft.collapsed);
   const [caption, setCaption] = useState(initialDraft.caption);
+  const [postAnonymously, setPostAnonymously] = useState(initialDraft.postAnonymously);
   const [locationPrecision, setLocationPrecision] = useState<LocationPrecision>(initialDraft.locationPrecision);
   const [countryInput, setCountryInput] = useState(initialDraft.countryInput);
   const [regionInput, setRegionInput] = useState(initialDraft.regionInput);
@@ -214,12 +361,32 @@ export function VideoComposer({
   const [selectedFileName, setSelectedFileName] = useState<string | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | undefined>();
   const [mediaType, setMediaType] = useState<"video" | "gif" | "png" | null>(null);
+  const [pullMode, setPullMode] = useState<PullMode>(initialDraft.pullMode);
+  const [pickerAccept, setPickerAccept] = useState(DEFAULT_MEDIA_ACCEPT);
+  const [linkUrl, setLinkUrl] = useState(initialDraft.linkUrl);
   const [mediaBytes, setMediaBytes] = useState(0);
+  const [dailyUploadUsage, setDailyUploadUsage] = useState<DailyUploadUsageState>(initialDailyUsage);
   const [publishAuthModalOpen, setPublishAuthModalOpen] = useState(false);
   const [googleSignInBusy, setGoogleSignInBusy] = useState(false);
-  const [status, setStatus] = useState<string>(
-    `Media is optional. Total post budget is ${MAX_TOTAL_UPLOAD_MB}MB (text + media).`
-  );
+  const [status, setStatus] = useState<string>("");
+
+  function dailyBudgetStatus(bytesUsed: number): string {
+    const remaining = Math.max(0, MAX_DAILY_UPLOAD_BYTES - bytesUsed);
+    return `${formatMegabytes(remaining)} remaining for today. Resets ${nextDailyResetLabel()}.`;
+  }
+
+  function refreshDailyUploadUsage(): DailyUploadUsageState {
+    const latest = readDailyUploadUsageState();
+    if (latest.day !== dailyUploadUsage.day || latest.bytesUsed !== dailyUploadUsage.bytesUsed) {
+      setDailyUploadUsage(latest);
+    }
+    return latest;
+  }
+
+  function showDailyBudgetStatus() {
+    const usage = refreshDailyUploadUsage();
+    setStatus(dailyBudgetStatus(usage.bytesUsed));
+  }
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -227,9 +394,13 @@ export function VideoComposer({
     }
     const captionForDraft =
       textByteLength(caption) <= MAX_DRAFT_PERSIST_BYTES ? caption : "";
+    const linkForDraft = textByteLength(linkUrl) <= MAX_DRAFT_PERSIST_BYTES ? linkUrl : "";
     const nextDraft: ComposerDraftState = {
       collapsed,
+      pullMode,
       caption: captionForDraft,
+      linkUrl: linkForDraft,
+      postAnonymously,
       locationPrecision,
       countryInput,
       regionInput,
@@ -240,7 +411,7 @@ export function VideoComposer({
     } catch {
       // Ignore storage quota errors so large posts can still be composed.
     }
-  }, [collapsed, caption, locationPrecision, countryInput, regionInput, cityInput]);
+  }, [collapsed, pullMode, caption, linkUrl, postAnonymously, locationPrecision, countryInput, regionInput, cityInput]);
 
   useEffect(() => {
     if (!isSignedIn) {
@@ -249,6 +420,17 @@ export function VideoComposer({
     setPublishAuthModalOpen(false);
     setGoogleSignInBusy(false);
   }, [isSignedIn]);
+
+  useEffect(() => {
+    if (!captionTextareaRef.current) {
+      return;
+    }
+    autoResizeTextarea(captionTextareaRef.current);
+  }, [caption, collapsed]);
+
+  useEffect(() => {
+    setStatus(dailyBudgetStatus(dailyUploadUsage.bytesUsed));
+  }, [dailyUploadUsage.day, dailyUploadUsage.bytesUsed]);
 
   const countryCodeByName = useMemo(() => {
     const fromIsoCatalog = isoCountries.getNames("en", { select: "official" }) as Record<string, string>;
@@ -306,26 +488,41 @@ export function VideoComposer({
       normalizedMediaType = "gif";
     }
 
-    const nextTotalBytes = textByteLength(caption) + normalizedFile.size;
-    if (nextTotalBytes > MAX_TOTAL_UPLOAD_BYTES) {
+    const usage = refreshDailyUploadUsage();
+    const remainingDailyBytes = Math.max(0, MAX_DAILY_UPLOAD_BYTES - usage.bytesUsed);
+    const draftTextBytes = textByteLength(caption) + textByteLength(linkUrl);
+    const nextTotalBytes = draftTextBytes + normalizedFile.size;
+    if (nextTotalBytes > remainingDailyBytes) {
       setStatus(
-        `Upload exceeds total ${MAX_TOTAL_UPLOAD_MB}MB budget (text + media).`
+        `This file exceeds your remaining daily budget (${formatMegabytes(remainingDailyBytes)} left). Resets ${nextDailyResetLabel()}.`
       );
       return;
     }
-    if (videoUrl) {
-      URL.revokeObjectURL(videoUrl);
-    }
-    const localUrl = URL.createObjectURL(normalizedFile);
-    setVideoUrl(localUrl);
-    setMediaType(normalizedMediaType);
-    setMediaBytes(normalizedFile.size);
-    setSelectedFileName(normalizedFile.name);
-    if (isJpeg) {
-      setStatus("JPG converted to PNG and attached. Add a caption and publish.");
+    setStatus("Uploading media...");
+    let uploaded: UploadedMediaPayload;
+    try {
+      uploaded = await uploadMediaToApi(normalizedFile);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to upload media.";
+      setStatus(message);
       return;
     }
-    setStatus(`${normalizedMediaType === "video" ? "Video" : normalizedMediaType.toUpperCase()} attached. Add a caption and publish.`);
+
+    if (videoUrl && videoUrl.startsWith("blob:")) {
+      URL.revokeObjectURL(videoUrl);
+    }
+    setVideoUrl(uploaded.mediaUrl);
+    setMediaType(normalizedMediaType);
+    setPullMode(normalizedMediaType === "video" ? "video" : "image");
+    setMediaBytes(Math.max(0, Math.floor(uploaded.sizeBytes)));
+    setSelectedFileName(normalizedFile.name);
+    if (isJpeg) {
+      setStatus(`JPG converted to PNG and attached. Add details and publish. ${dailyBudgetStatus(usage.bytesUsed)}`);
+      return;
+    }
+    setStatus(
+      `${normalizedMediaType === "video" ? "Video" : normalizedMediaType.toUpperCase()} attached. Add details and publish. ${dailyBudgetStatus(usage.bytesUsed)}`
+    );
   }
 
   function onFileSelect(event: React.ChangeEvent<HTMLInputElement>) {
@@ -340,6 +537,7 @@ export function VideoComposer({
     if (file) {
       void applyFile(file);
     }
+    setPickerAccept(DEFAULT_MEDIA_ACCEPT);
   }
 
   function onDrop(event: React.DragEvent<HTMLDivElement>) {
@@ -354,6 +552,39 @@ export function VideoComposer({
     }
   }
 
+  function clearAttachedMedia() {
+    if (videoUrl && videoUrl.startsWith("blob:")) {
+      URL.revokeObjectURL(videoUrl);
+    }
+    setSelectedFileName(null);
+    setVideoUrl(undefined);
+    setMediaType(null);
+    setMediaBytes(0);
+    setPickerAccept(DEFAULT_MEDIA_ACCEPT);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+  }
+
+  function openMediaPicker(kind: "all" | "image" | "video") {
+    if (!isSignedIn) {
+      setStatus(SIGN_IN_REQUIRED_UPLOAD_MESSAGE);
+      return;
+    }
+    if (kind === "image") {
+      setPullMode("image");
+      setPickerAccept(IMAGE_MEDIA_ACCEPT);
+    } else if (kind === "video") {
+      setPullMode("video");
+      setPickerAccept(VIDEO_MEDIA_ACCEPT);
+    } else {
+      setPickerAccept(DEFAULT_MEDIA_ACCEPT);
+    }
+    window.requestAnimationFrame(() => {
+      fileInputRef.current?.click();
+    });
+  }
+
   function publishPost() {
     if (!isSignedIn) {
       setPublishAuthModalOpen(true);
@@ -361,83 +592,119 @@ export function VideoComposer({
     }
 
     const trimmedCaption = caption.trim();
-    if (!trimmedCaption) {
-      setStatus("Caption is required.");
+    const trimmedLink = linkUrl.trim();
+    let publishCaption = caption;
+
+    if (pullMode === "link") {
+      if (!trimmedLink) {
+        setStatus("Link URL is required.");
+        return;
+      }
+      try {
+        const parsed = new URL(trimmedLink);
+        if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+          throw new Error("invalid");
+        }
+      } catch {
+        setStatus("Please enter a valid http(s) link.");
+        return;
+      }
+      publishCaption = trimmedCaption ? `${trimmedLink}\n\n${caption}` : trimmedLink;
+    } else if (!trimmedCaption) {
+      setStatus("Post text is required.");
       return;
     }
-    const captionBytes = textByteLength(caption);
+
+    if (pullMode === "image" && (!videoUrl || (mediaType !== "gif" && mediaType !== "png"))) {
+      setStatus("Please upload an image or GIF before publishing.");
+      return;
+    }
+    if (pullMode === "video" && (!videoUrl || mediaType !== "video")) {
+      setStatus("Please upload a video before publishing.");
+      return;
+    }
+
+    const captionBytes = textByteLength(publishCaption);
     const totalUploadBytes = captionBytes + mediaBytes;
-    if (totalUploadBytes > MAX_TOTAL_UPLOAD_BYTES) {
-      setStatus(`Post exceeds total ${MAX_TOTAL_UPLOAD_MB}MB budget (text + media).`);
+    const usage = refreshDailyUploadUsage();
+    const remainingDailyBytes = Math.max(0, MAX_DAILY_UPLOAD_BYTES - usage.bytesUsed);
+    if (totalUploadBytes > remainingDailyBytes) {
+      setStatus(`This post exceeds your remaining daily budget (${formatMegabytes(remainingDailyBytes)} left). Resets ${nextDailyResetLabel()}.`);
       return;
     }
-    const detectedLanguage = detectCaptionLanguage(trimmedCaption);
+    const detectedLanguage = detectCaptionLanguage(publishCaption.trim());
 
     const trimmedCountry = countryInput.trim();
     const trimmedRegion = regionInput.trim();
     const trimmedCity = cityInput.trim();
-    const mappedCountryCode =
-      countryCodeByName.get(trimmedCountry.toLowerCase()) ??
-      isoCountries.getAlpha2Code(trimmedCountry, "en") ??
-      "";
+    const mappedCountryCode = postAnonymously
+      ? "ANON"
+      : countryCodeByName.get(trimmedCountry.toLowerCase()) ??
+        isoCountries.getAlpha2Code(trimmedCountry, "en") ??
+        "";
     const resolvedCountryCode = mappedCountryCode;
 
-    if (!trimmedCountry) {
-      setStatus("Country or territory is required.");
-      return;
-    }
-    if (locationPrecision === "region" && !trimmedRegion) {
-      setStatus("Region/State is required for region precision.");
-      return;
-    }
-    if (locationPrecision === "city" && !trimmedCity) {
-      setStatus("City is required for city precision.");
-      return;
+    if (!postAnonymously) {
+      if (!trimmedCountry) {
+        setStatus("Country or territory is required.");
+        return;
+      }
+      if (locationPrecision === "region" && !trimmedRegion) {
+        setStatus("Region/State is required for region precision.");
+        return;
+      }
+      if (locationPrecision === "city" && !trimmedCity) {
+        setStatus("City is required for city precision.");
+        return;
+      }
     }
 
-    const locationLabel =
-      locationPrecision === "city"
+    const locationLabel = postAnonymously
+      ? "Anonymous"
+      : locationPrecision === "city"
         ? `${trimmedCity}${trimmedRegion ? `, ${trimmedRegion}` : ""}, ${trimmedCountry}`
         : locationPrecision === "region"
           ? `${trimmedRegion}, ${trimmedCountry}`
           : trimmedCountry;
 
     onPublish({
-      caption: trimmedCaption,
+      // Preserve the user's line breaks exactly as typed.
+      caption: publishCaption,
       countryCode: resolvedCountryCode,
       countryName: locationLabel,
       videoUrl,
       mediaType: mediaType ?? undefined,
-      originalLanguage: detectedLanguage
+      originalLanguage: detectedLanguage,
+      anonymous: postAnonymously
     });
     setCaption("");
+    setLinkUrl("");
     setSelectedFileName(null);
     setVideoUrl(undefined);
     setMediaType(null);
+    setPullMode("text");
     setMediaBytes(0);
-    setStatus("Post published to your feed.");
+    const nextUsage: DailyUploadUsageState = {
+      day: usage.day,
+      bytesUsed: usage.bytesUsed + totalUploadBytes
+    };
+    setDailyUploadUsage(nextUsage);
+    writeDailyUploadUsageState(nextUsage);
+    setStatus(`Post published. ${dailyBudgetStatus(nextUsage.bytesUsed)}`);
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
   }
 
   function clearDraft() {
-    if (videoUrl) {
-      URL.revokeObjectURL(videoUrl);
-    }
+    clearAttachedMedia();
     setCaption("");
-    setSelectedFileName(null);
-    setVideoUrl(undefined);
-    setMediaType(null);
-    setMediaBytes(0);
+    setLinkUrl("");
+    setPullMode("text");
     setRegionInput("");
     setCityInput("");
-    setStatus(
-      `Draft cleared. Total post budget is ${MAX_TOTAL_UPLOAD_MB}MB (text + media).`
-    );
-    if (fileInputRef.current) {
-      fileInputRef.current.value = "";
-    }
+    const usage = refreshDailyUploadUsage();
+    setStatus(`Draft cleared. ${dailyBudgetStatus(usage.bytesUsed)}`);
   }
 
   async function handleGoogleSignInFromModal() {
@@ -475,108 +742,239 @@ export function VideoComposer({
       ) : (
         <>
           <header className="composer__header">
-            <h2>Create Post</h2>
+            <div className="composer__title-group">
+              <h2>Create Post</h2>
+              <div className="composer__media-slider" role="radiogroup" aria-label="Post type">
+                <button
+                  type="button"
+                  className={
+                    pullMode === "text" ? "composer__media-option is-active" : "composer__media-option"
+                  }
+                  onClick={() => {
+                    setPullMode("text");
+                    clearAttachedMedia();
+                    captionTextareaRef.current?.focus();
+                    showDailyBudgetStatus();
+                  }}
+                  aria-checked={pullMode === "text"}
+                  role="radio"
+                >
+                  Text
+                </button>
+                <button
+                  type="button"
+                  className={
+                    pullMode === "link" ? "composer__media-option is-active" : "composer__media-option"
+                  }
+                  onClick={() => {
+                    setPullMode("link");
+                    clearAttachedMedia();
+                    window.requestAnimationFrame(() => {
+                      linkInputRef.current?.focus();
+                    });
+                    showDailyBudgetStatus();
+                  }}
+                  aria-checked={pullMode === "link"}
+                  role="radio"
+                >
+                  Link
+                </button>
+                <button
+                  type="button"
+                  className={
+                    pullMode === "image" ? "composer__media-option is-active" : "composer__media-option"
+                  }
+                  onClick={() => {
+                    setPullMode("image");
+                    clearAttachedMedia();
+                    showDailyBudgetStatus();
+                  }}
+                  aria-checked={pullMode === "image"}
+                  role="radio"
+                >
+                  Image
+                </button>
+                <button
+                  type="button"
+                  className={
+                    pullMode === "video" ? "composer__media-option is-active" : "composer__media-option"
+                  }
+                  onClick={() => {
+                    setPullMode("video");
+                    clearAttachedMedia();
+                    showDailyBudgetStatus();
+                  }}
+                  aria-checked={pullMode === "video"}
+                  role="radio"
+                >
+                  Video
+                </button>
+              </div>
+            </div>
             <button
               type="button"
-              className="composer__collapse"
+              className="composer__collapse composer__collapse--header"
               onClick={() => setCollapsed(true)}
               aria-expanded="true"
             >
               Minimize
             </button>
           </header>
-          <div
-            className="dropzone"
-            onDragOver={(event) => event.preventDefault()}
-            onDrop={onDrop}
-            onClick={() => {
-              if (!isSignedIn) {
-                setStatus(SIGN_IN_REQUIRED_UPLOAD_MESSAGE);
-                return;
-              }
-              fileInputRef.current?.click();
-            }}
-          >
-            {videoUrl && (mediaType === "gif" || mediaType === "png") ? (
-              <img src={videoUrl} alt="Uploaded media preview" loading="lazy" />
-            ) : videoUrl ? (
-              <video src={videoUrl} controls playsInline />
-            ) : (
-              <p>Text-only post or upload video/GIF/PNG/JPG (total {MAX_TOTAL_UPLOAD_MB}MB)</p>
-            )}
-          </div>
+          {pullMode === "image" || pullMode === "video" ? (
+            <div
+              className="dropzone"
+              onDragOver={(event) => event.preventDefault()}
+              onDrop={onDrop}
+              onClick={() => openMediaPicker(pullMode === "image" ? "image" : "video")}
+            >
+              {videoUrl && (mediaType === "gif" || mediaType === "png") ? (
+                <img src={videoUrl} alt="Uploaded media preview" loading="lazy" />
+              ) : videoUrl ? (
+                <video src={videoUrl} controls playsInline />
+              ) : pullMode === "image" ? (
+                <p>Upload image, GIF, PNG, or JPG (daily {MAX_DAILY_UPLOAD_MB}MB)</p>
+              ) : (
+                <p>Upload video (daily {MAX_DAILY_UPLOAD_MB}MB)</p>
+              )}
+            </div>
+          ) : null}
           <input
             ref={fileInputRef}
             type="file"
-            accept="video/*,image/gif,image/png,image/jpeg,.jpg,.jpeg"
+            accept={pickerAccept}
             onChange={onFileSelect}
             disabled={!isSignedIn}
             hidden
           />
-          {selectedFileName ? <p className="status-line">Attached: {selectedFileName}</p> : null}
-          <textarea
-            className="composer__caption"
-            placeholder="Write your post text..."
-            value={caption}
-            onChange={(event) => setCaption(event.target.value)}
-          />
-          <div className="composer__meta">
-            <label>
-              Precision
-              <select
-                value={locationPrecision}
-                onChange={(event) => setLocationPrecision(event.target.value as LocationPrecision)}
-              >
-                <option value="country">Country</option>
-                <option value="region">Region/State</option>
-                <option value="city">City</option>
-              </select>
-            </label>
-            <label>
-              Country or territory
-              <input
-                list="country-suggestions"
-                value={countryInput}
+          {(pullMode === "image" || pullMode === "video") && selectedFileName ? (
+            <p className="status-line">Attached: {selectedFileName}</p>
+          ) : null}
+          {pullMode === "link" ? (
+            <div className="composer__link-panel">
+              <label className="composer__link-label">
+                Link URL
+                <input
+                  ref={linkInputRef}
+                  type="url"
+                  value={linkUrl}
+                  onChange={(event) => setLinkUrl(event.target.value)}
+                  placeholder="https://example.com/article"
+                />
+              </label>
+              <textarea
+                ref={captionTextareaRef}
+                className="composer__caption composer__caption--link"
+                placeholder="Add optional context..."
+                value={caption}
                 onChange={(event) => {
-                  const nextCountry = event.target.value;
-                  setCountryInput(nextCountry);
+                  autoResizeTextarea(event.target);
+                  setCaption(event.target.value);
                 }}
-                placeholder="Enter country or territory"
               />
-              <datalist id="country-suggestions">
-                {countrySuggestions.map((name) => (
-                  <option key={name} value={name} />
-                ))}
-              </datalist>
-            </label>
-            {locationPrecision !== "country" ? (
+            </div>
+          ) : null}
+          {pullMode === "text" ? (
+            <textarea
+              ref={captionTextareaRef}
+              className="composer__caption composer__caption--expanded"
+              placeholder="Write your post text..."
+              value={caption}
+              onChange={(event) => {
+                autoResizeTextarea(event.target);
+                setCaption(event.target.value);
+              }}
+            />
+          ) : null}
+          {pullMode === "image" || pullMode === "video" ? (
+            <textarea
+              ref={captionTextareaRef}
+              className="composer__caption"
+              placeholder="Add caption..."
+              value={caption}
+              onChange={(event) => {
+                autoResizeTextarea(event.target);
+                setCaption(event.target.value);
+              }}
+            />
+          ) : null}
+          {!postAnonymously ? (
+            <div className="composer__meta">
               <label>
-                Region/State
-                <input
-                  value={regionInput}
-                  onChange={(event) => setRegionInput(event.target.value)}
-                  placeholder="California"
-                />
+                Precision
+                <select
+                  value={locationPrecision}
+                  onChange={(event) => setLocationPrecision(event.target.value as LocationPrecision)}
+                >
+                  <option value="country">Country</option>
+                  <option value="region">Region/State</option>
+                  <option value="city">City</option>
+                </select>
               </label>
-            ) : null}
-            {locationPrecision === "city" ? (
               <label>
-                City
+                Country or territory
                 <input
-                  value={cityInput}
-                  onChange={(event) => setCityInput(event.target.value)}
-                  placeholder="San Francisco"
+                  list="country-suggestions"
+                  value={countryInput}
+                  onChange={(event) => {
+                    const nextCountry = event.target.value;
+                    setCountryInput(nextCountry);
+                  }}
+                  placeholder="Enter country or territory"
                 />
+                <datalist id="country-suggestions">
+                  {countrySuggestions.map((name) => (
+                    <option key={name} value={name} />
+                  ))}
+                </datalist>
               </label>
+              {locationPrecision !== "country" ? (
+                <label>
+                  Region/State
+                  <input
+                    value={regionInput}
+                    onChange={(event) => setRegionInput(event.target.value)}
+                    placeholder="California"
+                  />
+                </label>
+              ) : null}
+              {locationPrecision === "city" ? (
+                <label>
+                  City
+                  <input
+                    value={cityInput}
+                    onChange={(event) => setCityInput(event.target.value)}
+                    placeholder="San Francisco"
+                  />
+                </label>
+              ) : null}
+            </div>
+          ) : null}
+          <div className="composer__privacy-card">
+            <div className="composer__privacy-top">
+              <div className="composer__location-preview">
+                Posting location: {postAnonymously
+                  ? "Anonymous"
+                  : locationPrecision === "city"
+                    ? `${cityInput || "City"}${regionInput ? `, ${regionInput}` : ""}, ${countryInput || "Country"}`
+                    : locationPrecision === "region"
+                      ? `${regionInput || "Region"}, ${countryInput || "Country"}`
+                      : countryInput || "Country"}
+              </div>
+              <label className="composer__checkbox">
+                <input
+                  type="checkbox"
+                  checked={postAnonymously}
+                  onChange={(event) => setPostAnonymously(event.target.checked)}
+                />
+                Post anonymously
+              </label>
+            </div>
+            {postAnonymously ? (
+              <p className="composer__anonymous-note">
+                Your profile name and handle are hidden on this post. It may still be possible for your account to be
+                identified.
+              </p>
             ) : null}
-          </div>
-          <div className="composer__location-preview">
-            Posting location:{" "}
-            {locationPrecision === "city"
-              ? `${cityInput || "City"}${regionInput ? `, ${regionInput}` : ""}, ${countryInput || "Country"}`
-              : locationPrecision === "region"
-                ? `${regionInput || "Region"}, ${countryInput || "Country"}`
-                : countryInput || "Country"}
           </div>
           <div className="yt-compose__actions composer__actions">
             <button

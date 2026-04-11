@@ -6,6 +6,8 @@ export interface FeedPost {
   id: string;
   author: string;
   handle: string;
+  isAnonymous?: boolean;
+  anonymousKey?: string;
   caption: string;
   originalLanguage: string;
   translatedCaptions?: Record<string, string>;

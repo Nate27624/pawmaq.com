@@ -1,0 +1,129 @@
+{
+  "ledger_version": "v1.0",
+  "generated_at": "2026-04-09T12:00:00Z",
+  "users": {
+    "u_maya_chow": {
+      "user_id": "u_maya_chow",
+      "username": "Maya Chow",
+      "username_normalized": "maya.chow",
+      "usertag": "@mayachow",
+      "name": "Maya Chow",
+      "bio": "Street edits and creator operations.",
+      "profile_image": {
+        "asset_id": "asset_profile_maya_001",
+        "url": "https://cdn.pawmaq.com/profile/maya.png",
+        "mime_type": "image/png",
+        "bytes": 182344,
+        "width": 512,
+        "height": 512
+      },
+      "banner_image": {
+        "asset_id": "asset_banner_maya_001",
+        "url": "https://cdn.pawmaq.com/banner/maya.png",
+        "mime_type": "image/png",
+        "bytes": 524912,
+        "width": 1600,
+        "height": 600
+      },
+      "posts": [
+        "post_maya_20260409_001",
+        "post_maya_20260409_002"
+      ],
+      "post_interaction_history": {
+        "seen_post_ids": [
+          "post_maya_20260409_001",
+          "post_anon_20260409_009"
+        ],
+        "liked_post_ids": [
+          "post_maya_20260409_001"
+        ],
+        "disliked_post_ids": [],
+        "neutral_post_ids": [
+          "post_anon_20260409_009"
+        ],
+        "saved_post_ids": [
+          "post_maya_20260409_001"
+        ],
+        "reposted_post_ids": [],
+        "commented_post_ids": [
+          "post_maya_20260409_001"
+        ]
+      },
+      "share_social_graph": true,
+      "social_graph": {
+        "following_user_ids": [
+          "u_theo_park",
+          "u_lina_park"
+        ],
+        "following_creator_ids": [
+          "creator_doc_streetlab"
+        ],
+        "followers_count": 3241,
+        "follower_user_ids": [
+          "u_nia_carter",
+          "u_omar_lin"
+        ]
+      },
+      "created_at": "2026-03-12T09:11:14Z",
+      "updated_at": "2026-04-09T11:55:00Z"
+    },
+    "u_private_viewer_01": {
+      "user_id": "u_private_viewer_01",
+      "username": "Quiet Viewer",
+      "username_normalized": "quiet.viewer",
+      "usertag": "@quietviewer",
+      "name": "Quiet Viewer",
+      "profile_image": {
+        "asset_id": "asset_profile_quiet_001",
+        "url": "https://cdn.pawmaq.com/profile/quiet.png",
+        "mime_type": "image/png",
+        "bytes": 115210,
+        "width": 512,
+        "height": 512
+      },
+      "banner_image": {
+        "asset_id": "asset_banner_quiet_001",
+        "url": "https://cdn.pawmaq.com/banner/quiet.png",
+        "mime_type": "image/png",
+        "bytes": 306012,
+        "width": 1600,
+        "height": 600
+      },
+      "posts": [],
+      "post_interaction_history": {
+        "seen_post_ids": [],
+        "liked_post_ids": [],
+        "disliked_post_ids": [],
+        "neutral_post_ids": [],
+        "saved_post_ids": [],
+        "reposted_post_ids": [],
+        "commented_post_ids": []
+      },
+      "share_social_graph": false,
+      "created_at": "2026-04-01T19:03:40Z",
+      "updated_at": "2026-04-09T11:54:00Z"
+    }
+  },
+  "username_index": {
+    "maya.chow": "u_maya_chow",
+    "quiet.viewer": "u_private_viewer_01"
+  },
+  "usertag_index": {
+    "@mayachow": "u_maya_chow",
+    "@quietviewer": "u_private_viewer_01"
+  },
+  "daily_ledger_quota_by_user": {
+    "2026-04-09": {
+      "u_maya_chow": {
+        "bytes_used": 24873,
+        "limit_bytes": 209715200,
+        "remaining_bytes": 209690327
+      },
+      "u_private_viewer_01": {
+        "bytes_used": 8421,
+        "limit_bytes": 209715200,
+        "remaining_bytes": 209706779
+      }
+    }
+  }
+}

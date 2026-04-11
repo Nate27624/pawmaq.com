@@ -7,8 +7,28 @@
     "dev": "corepack pnpm --filter @pawmaq/web dev",
     "dev:api": "corepack pnpm --filter @pawmaq/api dev",
     "dev:web": "corepack pnpm --filter @pawmaq/web dev",
+    "test:lab": "corepack pnpm --filter @pawmaq/api test:lab",
+    "prepare": "husky",
+    "security:keys:staged": "node ./scripts/security/private-key-scan.mjs --staged",
+    "security:keys:tracked": "node ./scripts/security/private-key-scan.mjs --tracked",
+    "security:secrets:staged": "node ./scripts/security/secretlint-scan.mjs --staged",
+    "security:secrets:tracked": "node ./scripts/security/secretlint-scan.mjs --tracked",
+    "security:vulns": "corepack pnpm audit --prod --audit-level moderate",
+    "security:precommit": "corepack pnpm run security:keys:staged && corepack pnpm run security:secrets:staged",
+    "security:full": "corepack pnpm run security:keys:tracked && corepack pnpm run security:secrets:tracked && corepack pnpm run security:vulns",
+    "security:ci": "corepack pnpm run security:full",
     "build": "corepack pnpm -r build",
     "typecheck": "corepack pnpm -r typecheck",
     "lint": "corepack pnpm -r lint"
+  },
+  "pnpm": {
+    "overrides": {
+      "d3-color": "^3.1.0"
+    }
+  },
+  "devDependencies": {
+    "@secretlint/secretlint-rule-preset-recommend": "^11.6.0",
+    "husky": "^9.1.7",
+    "secretlint": "^11.6.0"
   }
 }

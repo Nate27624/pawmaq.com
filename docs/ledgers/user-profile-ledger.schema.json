@@ -1,0 +1,334 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pawmaq.com/schemas/user-profile-ledger.schema.json",
+  "title": "User Profile Ledger",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "ledger_version",
+    "generated_at",
+    "users",
+    "username_index",
+    "daily_ledger_quota_by_user"
+  ],
+  "properties": {
+    "ledger_version": {
+      "type": "string",
+      "pattern": "^v[0-9]+\\.[0-9]+$"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "users": {
+      "type": "object",
+      "description": "Keyed by user_id",
+      "additionalProperties": {
+        "$ref": "#/$defs/userProfile"
+      }
+    },
+    "username_index": {
+      "type": "object",
+      "description": "Search index: normalized username (lowercase) -> user_id",
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^u_[a-zA-Z0-9_-]{3,64}$"
+      }
+    },
+    "usertag_index": {
+      "type": "object",
+      "description": "Optional index: @handle -> user_id",
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^u_[a-zA-Z0-9_-]{3,64}$"
+      }
+    },
+    "daily_ledger_quota_by_user": {
+      "type": "object",
+      "description": "YYYY-MM-DD -> (user_id -> ledger update bytes for the day)",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "bytes_used",
+            "limit_bytes",
+            "remaining_bytes"
+          ],
+          "properties": {
+            "bytes_used": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "limit_bytes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "remaining_bytes": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "mediaAssetRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "asset_id",
+        "url",
+        "mime_type",
+        "bytes"
+      ],
+      "properties": {
+        "asset_id": {
+          "type": "string",
+          "pattern": "^asset_[a-zA-Z0-9_-]{6,128}$"
+        },
+        "url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "mime_type": {
+          "type": "string",
+          "minLength": 3
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "socialGraph": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "following_user_ids",
+        "following_creator_ids",
+        "followers_count"
+      ],
+      "properties": {
+        "following_user_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^u_[a-zA-Z0-9_-]{3,64}$"
+          },
+          "uniqueItems": true
+        },
+        "following_creator_ids": {
+          "type": "array",
+          "description": "Creators can be normal users or verified creator IDs",
+          "items": {
+            "type": "string",
+            "pattern": "^(u|creator)_[a-zA-Z0-9_-]{3,64}$"
+          },
+          "uniqueItems": true
+        },
+        "followers_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "follower_user_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^u_[a-zA-Z0-9_-]{3,64}$"
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "postInteractionHistory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "seen_post_ids",
+        "liked_post_ids",
+        "disliked_post_ids",
+        "neutral_post_ids",
+        "saved_post_ids",
+        "reposted_post_ids",
+        "commented_post_ids"
+      ],
+      "properties": {
+        "seen_post_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^post_[a-zA-Z0-9_-]{6,128}$"
+          },
+          "uniqueItems": true
+        },
+        "liked_post_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^post_[a-zA-Z0-9_-]{6,128}$"
+          },
+          "uniqueItems": true
+        },
+        "disliked_post_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^post_[a-zA-Z0-9_-]{6,128}$"
+          },
+          "uniqueItems": true
+        },
+        "neutral_post_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^post_[a-zA-Z0-9_-]{6,128}$"
+          },
+          "uniqueItems": true
+        },
+        "saved_post_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^post_[a-zA-Z0-9_-]{6,128}$"
+          },
+          "uniqueItems": true
+        },
+        "reposted_post_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^post_[a-zA-Z0-9_-]{6,128}$"
+          },
+          "uniqueItems": true
+        },
+        "commented_post_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^post_[a-zA-Z0-9_-]{6,128}$"
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "userProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "user_id",
+        "username",
+        "usertag",
+        "name",
+        "profile_image",
+        "banner_image",
+        "posts",
+        "post_interaction_history",
+        "share_social_graph"
+      ],
+      "properties": {
+        "user_id": {
+          "type": "string",
+          "pattern": "^u_[a-zA-Z0-9_-]{3,64}$"
+        },
+        "username": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 64
+        },
+        "username_normalized": {
+          "type": "string",
+          "pattern": "^[a-z0-9._-]{2,64}$"
+        },
+        "usertag": {
+          "type": "string",
+          "pattern": "^@[A-Za-z0-9._-]{2,32}$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "bio": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "profile_image": {
+          "$ref": "#/$defs/mediaAssetRef"
+        },
+        "banner_image": {
+          "$ref": "#/$defs/mediaAssetRef"
+        },
+        "posts": {
+          "type": "array",
+          "description": "Post IDs authored by this profile",
+          "items": {
+            "type": "string",
+            "pattern": "^post_[a-zA-Z0-9_-]{6,128}$"
+          },
+          "uniqueItems": true
+        },
+        "post_interaction_history": {
+          "$ref": "#/$defs/postInteractionHistory"
+        },
+        "share_social_graph": {
+          "type": "boolean",
+          "description": "If false, social_graph should be omitted."
+        },
+        "social_graph": {
+          "$ref": "#/$defs/socialGraph"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "share_social_graph": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "social_graph"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "share_social_graph": {
+                "const": false
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "required": [
+                "social_graph"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
+}

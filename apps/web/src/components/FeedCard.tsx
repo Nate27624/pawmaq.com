@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { API_BASE_URL } from "../config/api";
 import type { FeedPost } from "../types";
 
 interface FeedCardProps {
@@ -7,9 +8,16 @@ interface FeedCardProps {
   isSaved: boolean;
   onToggleSave: (postId: string) => void;
   isSignedIn: boolean;
-  countryApprovalPercent: number | null;
-  rankScore?: number;
-  rankLabel?: string;
+  viewerHandle: string;
+  isAuthorFollowed: boolean;
+  onToggleFollowAuthor: (handle: string) => void;
+  onOpenAuthorProfile: (name: string, handle: string) => void;
+  reactionState: ReactionState;
+  isReposted: boolean;
+  extraComments: number;
+  onReactionChange: (postId: string, next: ReactionState) => void;
+  onToggleRepost: (postId: string) => void;
+  onCommentCountIncrement: (postId: string) => void;
 }
 
 function ReplyIcon() {
@@ -52,6 +60,14 @@ function SaveIcon() {
   );
 }
 
+function ShareIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M14 4V1L23 9L14 17V14C7.5 14 3 16.1 1 21C1.7 13.8 5.7 9 14 9V4Z" />
+    </svg>
+  );
+}
+
 function ThumbUpIcon() {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -71,13 +87,14 @@ function ThumbDownIcon() {
 type ReactionState = "up" | "neutral" | "down" | null;
 type CommentReaction = "up" | "down" | null;
 type PostLanguageMode = "native" | "original";
-type LeftActionState = "comments" | "repost" | "views" | null;
+type LeftActionState = "comments" | null;
 const SIGN_IN_REQUIRED_COMMENT_MESSAGE =
   "Sorry for the inconvenience, you need to sign in to comment. This helps keep the number of bots at a minimum.";
 const SIGN_IN_REQUIRED_VOTE_MESSAGE =
   "Sorry for the inconvenience, you need to sign in to vote. This helps keep the number of bots at a minimum.";
 const SIGN_IN_REQUIRED_COMMENT_REACTION_MESSAGE =
-  "Sorry for the inconvenience, you need to sign in to upload media. This helps keep the number of bots at a minimum.";
+  "Sorry for the inconvenience, you need to sign in to react to comments. This helps keep the number of bots at a minimum.";
+const SCROLL_TARGET_POST_KEY = "pawmaq-scroll-target-post-id";
 
 interface ThreadReply {
   id: string;
@@ -102,6 +119,39 @@ interface ThreadComment {
   replies: ThreadReply[];
 }
 
+interface LedgerReplyRecord {
+  reply_id: string;
+  author: string;
+  handle: string;
+  text: string;
+  created_at: string;
+  likes: number;
+  dislikes: number;
+  viewer_reaction?: "up" | "down" | null;
+}
+
+interface LedgerCommentRecord {
+  comment_id: string;
+  author: string;
+  handle: string;
+  text: string;
+  created_at: string;
+  likes: number;
+  dislikes: number;
+  viewer_reaction?: "up" | "down" | null;
+  replies: LedgerReplyRecord[];
+}
+
+interface PostLinkPreview {
+  href: string;
+  domain: string;
+  title: string;
+  subtitle: string;
+  imageUrl?: string;
+  embedUrl?: string;
+  embedKind?: "youtube" | "x" | "tiktok" | "instagram";
+}
+
 function initialsFromName(name: string): string {
   const parts = name.trim().split(/\s+/);
   if (parts.length === 1) {
@@ -110,63 +160,70 @@ function initialsFromName(name: string): string {
   return `${parts[0]!.slice(0, 1)}${parts[1]!.slice(0, 1)}`.toUpperCase();
 }
 
-function createSeedComments(post: FeedPost): ThreadComment[] {
-  return [
-    {
-      id: `${post.id}-c1`,
-      author: "Jordan Hale",
-      handle: "@jordanh",
-      age: "1h ago",
-      text: `The point about ${post.countryName} creator momentum is solid. Data needs better context though.`,
-      likes: 168,
-      dislikes: 9,
-      reaction: null,
-      replies: [
-        {
-          id: `${post.id}-c1-r1`,
-          author: "Nia Carter",
-          handle: "@niac",
-          age: "49m ago",
-          text: "Agree. Trend is real but this month might be an outlier.",
-          likes: 54,
-          dislikes: 3,
-          reaction: null
-        },
-        {
-          id: `${post.id}-c1-r2`,
-          author: "Omar Lin",
-          handle: "@omarlin",
-          age: "37m ago",
-          text: "Would like to see retention numbers too, not just growth.",
-          likes: 21,
-          dislikes: 1,
-          reaction: null
-        }
-      ]
-    },
-    {
-      id: `${post.id}-c2`,
-      author: "Cami Ruiz",
-      handle: "@camiruiz",
-      age: "2h ago",
-      text: "Editing quality is good here. Feels like old YouTube documentary energy.",
-      likes: 96,
-      dislikes: 6,
-      reaction: null,
-      replies: [
-        {
-          id: `${post.id}-c2-r1`,
-          author: "Theo Park",
-          handle: "@theop",
-          age: "1h ago",
-          text: "Exactly, long-form storytelling but adapted for short feeds.",
-          likes: 33,
-          dislikes: 2,
-          reaction: null
-        }
-      ]
-    }
-  ];
+function relativeAgeLabel(isoDate: string): string {
+  const created = new Date(isoDate).getTime();
+  if (!Number.isFinite(created)) {
+    return "just now";
+  }
+  const deltaMs = Math.max(0, Date.now() - created);
+  const deltaMinutes = Math.floor(deltaMs / 60000);
+  if (deltaMinutes < 1) {
+    return "just now";
+  }
+  if (deltaMinutes < 60) {
+    return `${deltaMinutes}m ago`;
+  }
+  const deltaHours = Math.floor(deltaMinutes / 60);
+  if (deltaHours < 24) {
+    return `${deltaHours}h ago`;
+  }
+  const deltaDays = Math.floor(deltaHours / 24);
+  return `${deltaDays}d ago`;
+}
+
+function mapLedgerReply(reply: LedgerReplyRecord): ThreadReply {
+  return {
+    id: reply.reply_id,
+    author: reply.author,
+    handle: reply.handle,
+    age: relativeAgeLabel(reply.created_at),
+    text: reply.text,
+    likes: Math.max(0, reply.likes),
+    dislikes: Math.max(0, reply.dislikes),
+    reaction: reply.viewer_reaction === "up" || reply.viewer_reaction === "down" ? reply.viewer_reaction : null
+  };
+}
+
+function mapLedgerComment(comment: LedgerCommentRecord): ThreadComment {
+  return {
+    id: comment.comment_id,
+    author: comment.author,
+    handle: comment.handle,
+    age: relativeAgeLabel(comment.created_at),
+    text: comment.text,
+    likes: Math.max(0, comment.likes),
+    dislikes: Math.max(0, comment.dislikes),
+    reaction: comment.viewer_reaction === "up" || comment.viewer_reaction === "down" ? comment.viewer_reaction : null,
+    replies: Array.isArray(comment.replies) ? comment.replies.map(mapLedgerReply) : []
+  };
+}
+
+async function fetchPostCommentsFromLedger(postId: string, actorId?: string): Promise<ThreadComment[]> {
+  const query = actorId ? `?actorId=${encodeURIComponent(actorId)}` : "";
+  const response = await fetch(`${API_BASE_URL}/v1/ledger/posts/${encodeURIComponent(postId)}/comments${query}`, {
+    credentials: "include"
+  });
+  const payload = (await response.json().catch(() => null)) as
+    | {
+        comments?: LedgerCommentRecord[];
+        message?: string;
+      }
+    | null;
+  if (!response.ok) {
+    throw new Error(payload?.message ?? "Unable to load comments.");
+  }
+  const comments = Array.isArray(payload?.comments) ? payload.comments : [];
+  return comments.map(mapLedgerComment);
 }
 
 function trimTrailingZeros(value: string): string {
@@ -185,22 +242,12 @@ function formatCompact(value: number, maxFractionDigits = 1): string {
 
 function formatLikeCompact(value: number): string {
   if (value >= 1000000) {
-    return `${(value / 1000000).toFixed(3)}M`;
+    return `${trimTrailingZeros((value / 1000000).toFixed(1))}M`;
   }
   if (value >= 1000) {
-    return `${(value / 1000).toFixed(3)}K`;
+    return `${trimTrailingZeros((value / 1000).toFixed(1))}K`;
   }
-  return value.toLocaleString(undefined, {
-    minimumFractionDigits: 3,
-    maximumFractionDigits: 3
-  });
-}
-
-function formatRankMetric(label: string, value: number): string {
-  if (label.toLowerCase() === "approval") {
-    return `${value.toFixed(3)}%`;
-  }
-  return Math.round(value).toLocaleString();
+  return value.toLocaleString(undefined, { maximumFractionDigits: 0 });
 }
 
 function clampPercent(value: number): number {
@@ -228,36 +275,238 @@ function countryFlagFromIso2(code: string): string {
   );
 }
 
+function autoResizeTextarea(textarea: HTMLTextAreaElement) {
+  const priorHeight = textarea.offsetHeight;
+  textarea.style.height = "auto";
+  const nextHeight = Math.max(textarea.scrollHeight, priorHeight);
+  textarea.style.height = `${nextHeight}px`;
+}
+
+function sanitizeDetectedUrl(rawUrl: string): string {
+  return rawUrl.replace(/[),.!?;:]+$/g, "");
+}
+
+function extractFirstUrl(text: string): string | null {
+  const match = text.match(/https?:\/\/[^\s<>"'`]+/i);
+  if (!match?.[0]) {
+    return null;
+  }
+  const sanitized = sanitizeDetectedUrl(match[0]);
+  try {
+    const parsed = new URL(sanitized);
+    return parsed.href;
+  } catch {
+    return null;
+  }
+}
+
+function removeUrlsFromCaption(text: string): string {
+  const withoutUrls = text.replace(/https?:\/\/[^\s<>"'`]+/gi, "");
+  return withoutUrls
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function youtubeVideoIdFromUrl(url: URL): string | null {
+  const host = url.hostname.replace(/^www\./, "").toLowerCase();
+  if (host === "youtu.be") {
+    const candidate = url.pathname.split("/").filter(Boolean)[0] ?? "";
+    return /^[a-zA-Z0-9_-]{6,}$/.test(candidate) ? candidate : null;
+  }
+  if (!["youtube.com", "m.youtube.com", "music.youtube.com"].includes(host)) {
+    return null;
+  }
+
+  if (url.pathname === "/watch") {
+    const candidate = url.searchParams.get("v") ?? "";
+    return /^[a-zA-Z0-9_-]{6,}$/.test(candidate) ? candidate : null;
+  }
+
+  const pathParts = url.pathname.split("/").filter(Boolean);
+  if (pathParts.length >= 2 && (pathParts[0] === "shorts" || pathParts[0] === "embed")) {
+    const candidate = pathParts[1] ?? "";
+    return /^[a-zA-Z0-9_-]{6,}$/.test(candidate) ? candidate : null;
+  }
+
+  return null;
+}
+
+function xPostIdFromUrl(url: URL): string | null {
+  const host = url.hostname.replace(/^www\./, "").toLowerCase();
+  if (!["x.com", "twitter.com", "mobile.twitter.com"].includes(host)) {
+    return null;
+  }
+  const parts = url.pathname.split("/").filter(Boolean);
+  if (parts.length < 3) {
+    return null;
+  }
+  if (parts[1] !== "status") {
+    return null;
+  }
+  const postId = parts[2] ?? "";
+  return /^\d+$/.test(postId) ? postId : null;
+}
+
+function tiktokVideoIdFromUrl(url: URL): string | null {
+  const host = url.hostname.replace(/^www\./, "").toLowerCase();
+  if (!host.endsWith("tiktok.com")) {
+    return null;
+  }
+  const parts = url.pathname.split("/").filter(Boolean);
+  const videoIndex = parts.indexOf("video");
+  if (videoIndex === -1 || videoIndex + 1 >= parts.length) {
+    return null;
+  }
+  const id = parts[videoIndex + 1] ?? "";
+  return /^\d+$/.test(id) ? id : null;
+}
+
+function instagramMediaFromUrl(url: URL): { kind: "reel" | "p" | "tv"; code: string } | null {
+  const host = url.hostname.replace(/^www\./, "").toLowerCase();
+  if (!host.endsWith("instagram.com")) {
+    return null;
+  }
+  const parts = url.pathname.split("/").filter(Boolean);
+  if (parts.length < 2) {
+    return null;
+  }
+  const kind = parts[0];
+  const code = parts[1] ?? "";
+  if ((kind === "reel" || kind === "p" || kind === "tv") && code.length > 3) {
+    return { kind, code };
+  }
+  return null;
+}
+
+function titleFromUrlPath(url: URL): string {
+  const path = url.pathname.replace(/\/+$/, "");
+  if (!path || path === "/") {
+    return `Open ${url.hostname.replace(/^www\./, "")}`;
+  }
+  try {
+    const decoded = decodeURIComponent(path);
+    return decoded.length > 72 ? `${decoded.slice(0, 69)}...` : decoded;
+  } catch {
+    return path.length > 72 ? `${path.slice(0, 69)}...` : path;
+  }
+}
+
+function buildPostLinkPreview(urlText: string): PostLinkPreview | null {
+  try {
+    const parsed = new URL(urlText);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return null;
+    }
+    const domain = parsed.hostname.replace(/^www\./, "").toLowerCase();
+    const youtubeId = youtubeVideoIdFromUrl(parsed);
+    if (youtubeId) {
+      return {
+        href: parsed.href,
+        domain: "youtube.com",
+        title: "YouTube video",
+        subtitle: parsed.href,
+        imageUrl: `https://i.ytimg.com/vi/${youtubeId}/hqdefault.jpg`,
+        embedUrl: `https://www.youtube.com/embed/${youtubeId}`,
+        embedKind: "youtube"
+      };
+    }
+
+    const xPostId = xPostIdFromUrl(parsed);
+    if (xPostId) {
+      const canonicalUrl = `https://x.com${parsed.pathname}`;
+      return {
+        href: parsed.href,
+        domain: "x.com",
+        title: "X post",
+        subtitle: parsed.href,
+        embedUrl: `https://twitframe.com/show?url=${encodeURIComponent(canonicalUrl)}`,
+        embedKind: "x"
+      };
+    }
+
+    const tiktokVideoId = tiktokVideoIdFromUrl(parsed);
+    if (tiktokVideoId) {
+      return {
+        href: parsed.href,
+        domain: "tiktok.com",
+        title: "TikTok video",
+        subtitle: parsed.href,
+        embedUrl: `https://www.tiktok.com/embed/v2/${tiktokVideoId}`,
+        embedKind: "tiktok"
+      };
+    }
+
+    const instagramMedia = instagramMediaFromUrl(parsed);
+    if (instagramMedia) {
+      return {
+        href: parsed.href,
+        domain: "instagram.com",
+        title: "Instagram post",
+        subtitle: parsed.href,
+        embedUrl: `https://www.instagram.com/${instagramMedia.kind}/${instagramMedia.code}/embed/`,
+        embedKind: "instagram"
+      };
+    }
+
+    return {
+      href: parsed.href,
+      domain,
+      title: titleFromUrlPath(parsed),
+      subtitle: parsed.href
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function FeedCard({
   post,
   nativeLanguage,
   isSaved,
   onToggleSave,
   isSignedIn,
-  countryApprovalPercent,
-  rankScore,
-  rankLabel = "Popularity"
+  viewerHandle,
+  isAuthorFollowed,
+  onToggleFollowAuthor,
+  onOpenAuthorProfile,
+  reactionState,
+  isReposted,
+  extraComments,
+  onReactionChange,
+  onToggleRepost,
+  onCommentCountIncrement
 }: FeedCardProps) {
   const cardRef = useRef<HTMLElement | null>(null);
   const [languageMode, setLanguageMode] = useState<PostLanguageMode>("native");
   const [activeLeftAction, setActiveLeftAction] = useState<LeftActionState>(null);
-  const [reactionState, setReactionState] = useState<ReactionState>(null);
   const [commentInput, setCommentInput] = useState("");
   const [commentAuthModalMessage, setCommentAuthModalMessage] = useState<string | null>(null);
-  const [threadComments, setThreadComments] = useState<ThreadComment[]>(() => createSeedComments(post));
+  const [threadComments, setThreadComments] = useState<ThreadComment[]>([]);
+  const [commentsLoading, setCommentsLoading] = useState(false);
+  const [commentsLoadedPostId, setCommentsLoadedPostId] = useState<string | null>(null);
+  const [commentsLoadError, setCommentsLoadError] = useState<string | null>(null);
   const [repliesOpenByComment, setRepliesOpenByComment] = useState<Record<string, boolean>>({});
   const [replyComposerOpenByComment, setReplyComposerOpenByComment] = useState<Record<string, boolean>>({});
   const [replyDraftByComment, setReplyDraftByComment] = useState<Record<string, string>>({});
+  const [shareStatusMessage, setShareStatusMessage] = useState<string | null>(null);
+  const commentInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const replyInputRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
 
   const commentsOpen = activeLeftAction === "comments";
-  const viewsOpen = activeLeftAction === "views";
-  const reposted = activeLeftAction === "repost";
-  const commentCount = post.comments + threadComments.length;
+  const reposted = isReposted;
+  const commentCount =
+    commentsLoadedPostId === post.id ? threadComments.length : Math.max(0, post.comments + extraComments);
   const repostCount = post.reposts + (reposted ? 1 : 0);
   const upvoteCount = post.upvotes + (reactionState === "up" ? 1 : 0);
   const neutralCount = post.neutralVotes + (reactionState === "neutral" ? 1 : 0);
   const downvoteCount = post.downvotes + (reactionState === "down" ? 1 : 0);
   const approvalPercent = approvalPercentFromVotes(upvoteCount, neutralCount, downvoteCount);
+  const isAnonymousPost = post.isAnonymous === true;
+  const visibleAuthor = isAnonymousPost ? "Anonymous" : post.author;
+  const visibleHandle = isAnonymousPost ? "@anonymous" : post.handle;
+  const canOpenAuthorProfile = !isAnonymousPost;
+  const canFollowAuthor = canOpenAuthorProfile && post.handle !== viewerHandle;
   const translatedCaption = post.translatedCaptions?.[nativeLanguage];
   const originalMatchesNative =
     nativeLanguage.trim().toLowerCase() === post.originalLanguage.trim().toLowerCase();
@@ -269,6 +518,14 @@ export function FeedCard({
   const effectiveLanguageMode: PostLanguageMode = hasTranslationForNative ? languageMode : "original";
   const displayCaption =
     effectiveLanguageMode === "native" ? translatedCaption ?? post.caption : post.caption;
+  const previewUrl = extractFirstUrl(displayCaption) ?? extractFirstUrl(post.caption);
+  const linkPreview = previewUrl ? buildPostLinkPreview(previewUrl) : null;
+  const visibleCaption = linkPreview ? removeUrlsFromCaption(displayCaption) : displayCaption;
+  const postDeepLinkPath = `/?postId=${encodeURIComponent(post.id)}#post-${post.id}`;
+  const shareUrl =
+    typeof window === "undefined"
+      ? postDeepLinkPath
+      : new URL(postDeepLinkPath, window.location.origin).toString();
 
   useEffect(() => {
     if (!commentAuthModalMessage) {
@@ -298,7 +555,227 @@ export function FeedCard({
     };
   }, [commentAuthModalMessage]);
 
-  function submitComment() {
+  useEffect(() => {
+    if (commentInputRef.current) {
+      autoResizeTextarea(commentInputRef.current);
+    }
+  }, [commentInput]);
+
+  useEffect(() => {
+    setThreadComments([]);
+    setCommentsLoadedPostId(null);
+    setCommentsLoadError(null);
+    setRepliesOpenByComment({});
+    setReplyComposerOpenByComment({});
+    setReplyDraftByComment({});
+  }, [post.id]);
+
+  useEffect(() => {
+    const entries = Object.entries(replyInputRefs.current);
+    for (const [commentId, textarea] of entries) {
+      if (!textarea) {
+        continue;
+      }
+      if (!replyComposerOpenByComment[commentId]) {
+        continue;
+      }
+      autoResizeTextarea(textarea);
+    }
+  }, [replyDraftByComment, replyComposerOpenByComment]);
+
+  useEffect(() => {
+    if (!commentsOpen) {
+      return;
+    }
+    if (commentsLoadedPostId === post.id) {
+      return;
+    }
+    let cancelled = false;
+    setCommentsLoading(true);
+    setCommentsLoadError(null);
+    void (async () => {
+      try {
+        const comments = await fetchPostCommentsFromLedger(post.id, isSignedIn ? viewerHandle : undefined);
+        if (cancelled) {
+          return;
+        }
+        setThreadComments(comments);
+        setCommentsLoadedPostId(post.id);
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+        const message = error instanceof Error ? error.message : "Unable to load comments.";
+        setCommentsLoadError(message);
+      } finally {
+        if (!cancelled) {
+          setCommentsLoading(false);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [commentsOpen, commentsLoadedPostId, isSignedIn, post.id, viewerHandle]);
+
+  useEffect(() => {
+    if (!shareStatusMessage) {
+      return;
+    }
+    const timeoutId = window.setTimeout(() => {
+      setShareStatusMessage(null);
+    }, 2200);
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [shareStatusMessage]);
+
+  function viewerDisplayName(): string {
+    const fallback = viewerHandle.replace(/^@+/, "").trim();
+    return fallback ? fallback : "You";
+  }
+
+  async function ensurePostLedgerRecord() {
+    const response = await fetch(`${API_BASE_URL}/v1/ledger/posts`, {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        id: post.id,
+        author: post.author,
+        handle: post.handle,
+        isAnonymous: post.isAnonymous === true,
+        anonymousKey: post.anonymousKey,
+        caption: post.caption,
+        createdAtMs: post.createdAtMs,
+        countryCode: post.countryCode,
+        countryName: post.countryName,
+        mediaType: post.mediaType,
+        mediaUrl: post.videoUrl ?? post.posterUrl,
+        upvotes: post.upvotes,
+        neutralVotes: post.neutralVotes,
+        downvotes: post.downvotes,
+        comments: threadComments.length
+      })
+    });
+    if (!response.ok) {
+      const payload = (await response.json().catch(() => null)) as { message?: string } | null;
+      throw new Error(payload?.message ?? "Unable to sync post record.");
+    }
+  }
+
+  async function createLedgerComment(text: string): Promise<ThreadComment> {
+    await ensurePostLedgerRecord();
+    const response = await fetch(`${API_BASE_URL}/v1/ledger/posts/${encodeURIComponent(post.id)}/comments`, {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        text
+      })
+    });
+    const payload = (await response.json().catch(() => null)) as
+      | {
+          comment?: LedgerCommentRecord;
+          message?: string;
+        }
+      | null;
+    if (!response.ok || !payload?.comment) {
+      throw new Error(payload?.message ?? "Unable to add comment.");
+    }
+    return mapLedgerComment(payload.comment);
+  }
+
+  async function createLedgerReply(commentId: string, text: string): Promise<ThreadReply> {
+    const response = await fetch(
+      `${API_BASE_URL}/v1/ledger/posts/${encodeURIComponent(post.id)}/comments/${encodeURIComponent(commentId)}/replies`,
+      {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({
+          text
+        })
+      }
+    );
+    const payload = (await response.json().catch(() => null)) as
+      | {
+          reply?: LedgerReplyRecord;
+          message?: string;
+        }
+      | null;
+    if (!response.ok || !payload?.reply) {
+      throw new Error(payload?.message ?? "Unable to add reply.");
+    }
+    return mapLedgerReply(payload.reply);
+  }
+
+  async function setLedgerCommentReaction(
+    commentId: string,
+    reaction: "up" | "down" | "none"
+  ): Promise<ThreadComment> {
+    const response = await fetch(
+      `${API_BASE_URL}/v1/ledger/posts/${encodeURIComponent(post.id)}/comments/${encodeURIComponent(commentId)}/reaction`,
+      {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({
+          reaction
+        })
+      }
+    );
+    const payload = (await response.json().catch(() => null)) as
+      | {
+          comment?: LedgerCommentRecord;
+          message?: string;
+        }
+      | null;
+    if (!response.ok || !payload?.comment) {
+      throw new Error(payload?.message ?? "Unable to update comment reaction.");
+    }
+    return mapLedgerComment(payload.comment);
+  }
+
+  async function setLedgerReplyReaction(
+    commentId: string,
+    replyId: string,
+    reaction: "up" | "down" | "none"
+  ): Promise<ThreadReply> {
+    const response = await fetch(
+      `${API_BASE_URL}/v1/ledger/posts/${encodeURIComponent(post.id)}/comments/${encodeURIComponent(commentId)}/replies/${encodeURIComponent(replyId)}/reaction`,
+      {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({
+          reaction
+        })
+      }
+    );
+    const payload = (await response.json().catch(() => null)) as
+      | {
+          reply?: LedgerReplyRecord;
+          message?: string;
+        }
+      | null;
+    if (!response.ok || !payload?.reply) {
+      throw new Error(payload?.message ?? "Unable to update reply reaction.");
+    }
+    return mapLedgerReply(payload.reply);
+  }
+
+  async function submitComment() {
     if (!isSignedIn) {
       setCommentAuthModalMessage(SIGN_IN_REQUIRED_COMMENT_MESSAGE);
       return;
@@ -308,27 +785,54 @@ export function FeedCard({
     if (!trimmed) {
       return;
     }
-    setThreadComments((prev) => [
-      {
-        id: `c-${crypto.randomUUID()}`,
-        author: "You",
-        handle: "@you",
-        age: "just now",
-        text: trimmed,
-        likes: 0,
-        dislikes: 0,
-        reaction: null,
-        replies: []
-      },
-      ...prev
-    ]);
-    setCommentInput("");
-    setCommentAuthModalMessage(null);
-    setActiveLeftAction("comments");
+    try {
+      const created = await createLedgerComment(trimmed);
+      setThreadComments((prev) => [created, ...prev.filter((comment) => comment.id !== created.id)]);
+      setCommentsLoadedPostId(post.id);
+      onCommentCountIncrement(post.id);
+      setCommentInput("");
+      setCommentsLoadError(null);
+      setCommentAuthModalMessage(null);
+      setActiveLeftAction("comments");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to add comment.";
+      setCommentsLoadError(message);
+    }
   }
 
   function toggleLeftAction(next: Exclude<LeftActionState, null>) {
     setActiveLeftAction((current) => (current === next ? null : next));
+  }
+
+  function openShareablePostLink() {
+    if (typeof window === "undefined") {
+      return;
+    }
+    window.sessionStorage.setItem(SCROLL_TARGET_POST_KEY, post.id);
+    window.history.replaceState({ postId: post.id }, "", postDeepLinkPath);
+  }
+
+  async function sharePostLink() {
+    try {
+      const nav = typeof navigator !== "undefined" ? navigator : null;
+      if (nav && typeof nav.share === "function") {
+        await nav.share({
+          title: "Pawmaq post",
+          text: "Check out this post on pawmaq.com",
+          url: shareUrl
+        });
+        setShareStatusMessage("Post shared.");
+        return;
+      }
+      if (nav?.clipboard && typeof nav.clipboard.writeText === "function") {
+        await nav.clipboard.writeText(shareUrl);
+        setShareStatusMessage("Post link copied.");
+        return;
+      }
+      setShareStatusMessage("Copy the link from the opened post.");
+    } catch {
+      setShareStatusMessage("Share canceled.");
+    }
   }
 
   function toggleReaction(next: Exclude<ReactionState, null>) {
@@ -336,24 +840,24 @@ export function FeedCard({
       setCommentAuthModalMessage(SIGN_IN_REQUIRED_VOTE_MESSAGE);
       return;
     }
-    setReactionState((current) => (current === next ? null : next));
+    onReactionChange(post.id, reactionState === next ? null : next);
   }
 
-  function toggleCommentReaction(commentId: string, next: CommentReaction) {
+  async function toggleCommentReaction(commentId: string, next: CommentReaction) {
     if (!isSignedIn) {
       setCommentAuthModalMessage(SIGN_IN_REQUIRED_COMMENT_REACTION_MESSAGE);
       return;
     }
-    setThreadComments((prev) =>
-      prev.map((comment) =>
-        comment.id === commentId
-          ? {
-              ...comment,
-              reaction: comment.reaction === next ? null : next
-            }
-          : comment
-      )
-    );
+    const current = threadComments.find((comment) => comment.id === commentId)?.reaction ?? null;
+    const target = current === next ? "none" : (next ?? "none");
+    try {
+      const updated = await setLedgerCommentReaction(commentId, target);
+      setThreadComments((prev) => prev.map((comment) => (comment.id === commentId ? updated : comment)));
+      setCommentsLoadError(null);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to update comment reaction.";
+      setCommentsLoadError(message);
+    }
   }
 
   function toggleReplies(commentId: string) {
@@ -367,28 +871,32 @@ export function FeedCard({
     return reply.likes + (reply.reaction === "up" ? 1 : 0);
   }
 
-  function toggleReplyReaction(commentId: string, replyId: string, next: CommentReaction) {
+  async function toggleReplyReaction(commentId: string, replyId: string, next: CommentReaction) {
     if (!isSignedIn) {
       setCommentAuthModalMessage(SIGN_IN_REQUIRED_COMMENT_REACTION_MESSAGE);
       return;
     }
-    setThreadComments((prev) =>
-      prev.map((comment) =>
-        comment.id === commentId
-          ? {
-              ...comment,
-              replies: comment.replies.map((reply) =>
-                reply.id === replyId
-                  ? {
-                      ...reply,
-                      reaction: reply.reaction === next ? null : next
-                    }
-                  : reply
-              )
-            }
-          : comment
-      )
-    );
+    const current =
+      threadComments.find((comment) => comment.id === commentId)?.replies.find((reply) => reply.id === replyId)
+        ?.reaction ?? null;
+    const target = current === next ? "none" : (next ?? "none");
+    try {
+      const updated = await setLedgerReplyReaction(commentId, replyId, target);
+      setThreadComments((prev) =>
+        prev.map((comment) =>
+          comment.id === commentId
+            ? {
+                ...comment,
+                replies: comment.replies.map((reply) => (reply.id === replyId ? updated : reply))
+              }
+            : comment
+        )
+      );
+      setCommentsLoadError(null);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to update reply reaction.";
+      setCommentsLoadError(message);
+    }
   }
 
   function toggleReplyComposer(commentId: string) {
@@ -398,7 +906,7 @@ export function FeedCard({
     }));
   }
 
-  function submitReply(commentId: string) {
+  async function submitReply(commentId: string) {
     if (!isSignedIn) {
       setCommentAuthModalMessage(SIGN_IN_REQUIRED_COMMENT_MESSAGE);
       return;
@@ -409,74 +917,163 @@ export function FeedCard({
     if (!trimmed) {
       return;
     }
-
-    setThreadComments((prev) =>
-      prev.map((comment) =>
-        comment.id === commentId
-          ? {
-              ...comment,
-              replies: [
-                {
-                  id: `r-${crypto.randomUUID()}`,
-                  author: "You",
-                  handle: "@you",
-                  age: "now",
-                  text: trimmed,
-                  likes: 0,
-                  dislikes: 0,
-                  reaction: null
-                },
-                ...comment.replies
-              ]
-            }
-          : comment
-      )
-    );
-
-    setReplyDraftByComment((prev) => ({
-      ...prev,
-      [commentId]: ""
-    }));
-    setRepliesOpenByComment((prev) => ({
-      ...prev,
-      [commentId]: true
-    }));
-    setReplyComposerOpenByComment((prev) => ({
-      ...prev,
-      [commentId]: false
-    }));
-    setCommentAuthModalMessage(null);
+    try {
+      const createdReply = await createLedgerReply(commentId, trimmed);
+      setThreadComments((prev) =>
+        prev.map((comment) =>
+          comment.id === commentId
+            ? {
+                ...comment,
+                replies: [createdReply, ...comment.replies.filter((reply) => reply.id !== createdReply.id)]
+              }
+            : comment
+        )
+      );
+      setReplyDraftByComment((prev) => ({
+        ...prev,
+        [commentId]: ""
+      }));
+      setRepliesOpenByComment((prev) => ({
+        ...prev,
+        [commentId]: true
+      }));
+      setReplyComposerOpenByComment((prev) => ({
+        ...prev,
+        [commentId]: false
+      }));
+      setCommentAuthModalMessage(null);
+      setCommentsLoadError(null);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to add reply.";
+      setCommentsLoadError(message);
+    }
   }
 
   return (
-    <article ref={cardRef} className="panel feed-card reveal">
-      <header className="feed-card__header">
+    <article id={`post-${post.id}`} ref={cardRef} className="panel feed-card reveal">
+      <header
+        className="feed-card__header feed-card__header--shareable"
+        role="link"
+        tabIndex={0}
+        aria-label="Open shareable post link"
+        onClick={openShareablePostLink}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            openShareablePostLink();
+          }
+        }}
+      >
         <div className="feed-card__author">
-          <p className="feed-card__author-line">
-            <span className="feed-card__author-name">{post.author}</span>
-            <span className="feed-card__meta">
-              {post.handle} • {post.createdAt}
-            </span>
-          </p>
+          {canOpenAuthorProfile ? (
+            <button
+              type="button"
+              className="feed-card__author-link"
+              onClick={(event) => {
+                event.stopPropagation();
+                onOpenAuthorProfile(post.author, post.handle);
+              }}
+              aria-label={`Open profile for ${post.author}`}
+            >
+              <p className="feed-card__author-line">
+                <span className="feed-card__author-name">{visibleAuthor}</span>
+                <span className="feed-card__meta">
+                  {visibleHandle} • {post.createdAt}
+                </span>
+              </p>
+            </button>
+          ) : (
+            <p className="feed-card__author-line">
+              <span className="feed-card__author-name">{visibleAuthor}</span>
+              <span className="feed-card__meta">
+                {visibleHandle} • {post.createdAt}
+              </span>
+            </p>
+          )}
         </div>
         <div className="feed-card__meta-actions">
+          {canFollowAuthor ? (
+            <button
+              type="button"
+              className={isAuthorFollowed ? "author-follow-chip is-following" : "author-follow-chip"}
+              onClick={(event) => {
+                event.stopPropagation();
+                onToggleFollowAuthor(post.handle);
+              }}
+            >
+              {isAuthorFollowed ? "Following" : "Follow"}
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className={shareStatusMessage ? "share-post-button is-shared" : "share-post-button"}
+            onClick={(event) => {
+              event.stopPropagation();
+              void sharePostLink();
+            }}
+            aria-label="Share post"
+            title="Share post"
+          >
+            <ShareIcon />
+          </button>
           <button
             type="button"
             className={isSaved ? "save-post-button is-saved" : "save-post-button"}
-            onClick={() => onToggleSave(post.id)}
+            onClick={(event) => {
+              event.stopPropagation();
+              onToggleSave(post.id);
+            }}
             aria-label={isSaved ? "Unsave post" : "Save post"}
             title={isSaved ? "Unsave" : "Save"}
           >
             <SaveIcon />
           </button>
-          {rankScore !== undefined ? (
-            <span className="rank-pill">
-              {rankLabel} {formatRankMetric(rankLabel, rankScore)}
-            </span>
-          ) : null}
         </div>
       </header>
-      <p className="feed-card__caption">{displayCaption}</p>
+      {shareStatusMessage ? <p className="feed-card__share-status">{shareStatusMessage}</p> : null}
+      {visibleCaption ? <p className="feed-card__caption">{visibleCaption}</p> : null}
+      {linkPreview?.embedUrl ? (
+        <div
+          className={
+            linkPreview.embedKind === "instagram" || linkPreview.embedKind === "tiktok"
+              ? "feed-card__link-embed feed-card__link-embed--vertical"
+              : "feed-card__link-embed"
+          }
+        >
+          <iframe
+            src={linkPreview.embedUrl}
+            title={`${linkPreview.title} embed`}
+            loading="lazy"
+            allow="autoplay; clipboard-write; encrypted-media; picture-in-picture; web-share"
+            allowFullScreen
+            referrerPolicy="strict-origin-when-cross-origin"
+          />
+        </div>
+      ) : null}
+      {linkPreview ? (
+        <a
+          className="feed-card__link-preview"
+          href={linkPreview.href}
+          target="_blank"
+          rel="noreferrer noopener"
+          aria-label={`Open link preview for ${linkPreview.domain}`}
+        >
+          <div className="feed-card__link-preview-media">
+            {linkPreview.imageUrl ? (
+              <img src={linkPreview.imageUrl} alt={linkPreview.title} loading="lazy" />
+            ) : (
+              <div className="feed-card__link-preview-fallback">
+                {linkPreview.domain.slice(0, 2).toUpperCase()}
+              </div>
+            )}
+          </div>
+          <div className="feed-card__link-preview-body">
+            <span className="feed-card__link-preview-domain">{linkPreview.domain}</span>
+            <strong className="feed-card__link-preview-title">{linkPreview.title}</strong>
+            <span className="feed-card__link-preview-url">{linkPreview.subtitle}</span>
+          </div>
+        </a>
+      ) : null}
       {hasTranslationForNative ? (
         <div className="feed-card__pre-media-controls">
           <div className="post-language-inline">
@@ -509,17 +1106,17 @@ export function FeedCard({
           </div>
         </div>
       ) : null}
-      <div className="feed-card__media">
-        {post.videoUrl && (post.mediaType === "gif" || post.mediaType === "png") ? (
-          <img src={post.videoUrl} alt={post.caption} loading="lazy" />
-        ) : post.videoUrl ? (
-          <video src={post.videoUrl} controls playsInline />
-        ) : post.posterUrl ? (
-          <img src={post.posterUrl} alt={post.caption} loading="lazy" />
-        ) : (
-          <div className="media-placeholder">No preview available.</div>
-        )}
-      </div>
+      {post.videoUrl || post.posterUrl ? (
+        <div className="feed-card__media">
+          {post.videoUrl && (post.mediaType === "gif" || post.mediaType === "png") ? (
+            <img src={post.videoUrl} alt={post.caption} loading="lazy" />
+          ) : post.videoUrl ? (
+            <video src={post.videoUrl} controls playsInline />
+          ) : (
+            <img src={post.posterUrl} alt={post.caption} loading="lazy" />
+          )}
+        </div>
+      ) : null}
 
       <nav className="feed-card__actions" aria-label="Post actions">
         <div className="feed-actions__left">
@@ -537,7 +1134,7 @@ export function FeedCard({
           <button
             className={`action-stat action-stat--button ${reposted ? "is-active" : ""}`}
             type="button"
-            onClick={() => toggleLeftAction("repost")}
+            onClick={() => onToggleRepost(post.id)}
             aria-label="Toggle repost"
           >
             <span className="action-stat__icon">
@@ -545,17 +1142,12 @@ export function FeedCard({
             </span>
             <strong>{formatCompact(repostCount)}</strong>
           </button>
-          <button
-            className={`action-stat action-stat--button action-stat--quiet ${viewsOpen ? "is-active" : ""}`}
-            type="button"
-            onClick={() => toggleLeftAction("views")}
-            aria-label="Toggle views details"
-          >
+          <div className="action-stat action-stat--static action-stat--quiet" aria-label="Views count">
             <span className="action-stat__icon">
               <ViewsIcon />
             </span>
             <strong>{formatCompact(post.views)}</strong>
-          </button>
+          </div>
         </div>
 
         <div className="reaction-group">
@@ -592,45 +1184,52 @@ export function FeedCard({
         </div>
       </nav>
 
-      {viewsOpen ? (
-        <div className="feed-inline-info">
-          <strong>{post.views.toLocaleString()} total views</strong>
-          <span>{((commentCount / Math.max(1, post.views)) * 100).toFixed(2)}% comment-rate</span>
-        </div>
-      ) : null}
-
       {commentsOpen ? (
         <section className="comment-sheet">
           <header className="comment-sheet__header">
             <h4>{formatCompact(commentCount)} Comments</h4>
           </header>
           <div className="yt-compose">
-            <div className="yt-avatar yt-avatar--self">Y</div>
+            <div className="yt-avatar yt-avatar--self">{initialsFromName(viewerDisplayName())}</div>
             <div className="yt-compose__main">
-              <input
-                type="text"
+              <textarea
+                ref={commentInputRef}
+                className="yt-compose__input"
                 placeholder="Add a comment..."
                 value={commentInput}
-                onChange={(event) => setCommentInput(event.target.value)}
+                onChange={(event) => {
+                  autoResizeTextarea(event.target);
+                  setCommentInput(event.target.value);
+                }}
+                rows={1}
               />
               <div className="yt-compose__actions">
                 <button
                   type="button"
                   className="yt-button-secondary yt-button-icon"
-                  onClick={() => setCommentInput("")}
+                  onClick={() => {
+                    setCommentInput("");
+                    if (commentInputRef.current) {
+                      commentInputRef.current.style.height = "";
+                    }
+                  }}
                   aria-label="Clear comment draft"
                   title="Clear comment"
                 >
                   <TrashIcon />
                 </button>
-                <button type="button" className="yt-button-primary" onClick={submitComment}>
+                <button type="button" className="yt-button-primary" onClick={() => void submitComment()}>
                   Comment
                 </button>
               </div>
             </div>
           </div>
           <div className="yt-comment-list">
-            {threadComments.length === 0 ? (
+            {commentsLoading ? (
+              <p className="comment-empty">Loading comments...</p>
+            ) : commentsLoadError ? (
+              <p className="comment-empty">{commentsLoadError}</p>
+            ) : threadComments.length === 0 ? (
               <p className="comment-empty">No comments yet.</p>
             ) : (
               threadComments.map((comment) => (
@@ -645,7 +1244,7 @@ export function FeedCard({
                       <button
                         className={`yt-comment-action ${comment.reaction === "up" ? "is-active" : ""}`}
                         type="button"
-                        onClick={() => toggleCommentReaction(comment.id, "up")}
+                        onClick={() => void toggleCommentReaction(comment.id, "up")}
                       >
                         <ThumbUpIcon />
                         <span>{formatCompact(comment.likes + (comment.reaction === "up" ? 1 : 0))}</span>
@@ -653,7 +1252,7 @@ export function FeedCard({
                       <button
                         className={`yt-comment-action ${comment.reaction === "down" ? "is-active" : ""}`}
                         type="button"
-                        onClick={() => toggleCommentReaction(comment.id, "down")}
+                        onClick={() => void toggleCommentReaction(comment.id, "down")}
                       >
                         <ThumbDownIcon />
                         <span>{formatCompact(comment.dislikes + (comment.reaction === "down" ? 1 : 0))}</span>
@@ -668,18 +1267,25 @@ export function FeedCard({
                     </div>
                     {replyComposerOpenByComment[comment.id] ? (
                       <div className="yt-reply-compose">
-                        <input
-                          type="text"
+                        <textarea
+                          className="yt-reply-compose__input"
+                          ref={(node) => {
+                            replyInputRefs.current[comment.id] = node;
+                          }}
                           placeholder="Write a reply..."
                           value={replyDraftByComment[comment.id] ?? ""}
                           onChange={(event) =>
-                            setReplyDraftByComment((prev) => ({
-                              ...prev,
-                              [comment.id]: event.target.value
-                            }))
+                            {
+                              autoResizeTextarea(event.target);
+                              setReplyDraftByComment((prev) => ({
+                                ...prev,
+                                [comment.id]: event.target.value
+                              }));
+                            }
                           }
+                          rows={1}
                         />
-                        <button type="button" onClick={() => submitReply(comment.id)}>
+                        <button type="button" onClick={() => void submitReply(comment.id)}>
                           Reply
                         </button>
                       </div>
@@ -705,7 +1311,7 @@ export function FeedCard({
                                     <button
                                       className={`yt-comment-action ${reply.reaction === "up" ? "is-active" : ""}`}
                                       type="button"
-                                      onClick={() => toggleReplyReaction(comment.id, reply.id, "up")}
+                                      onClick={() => void toggleReplyReaction(comment.id, reply.id, "up")}
                                     >
                                       <ThumbUpIcon />
                                       <span>{formatCompact(reply.likes + (reply.reaction === "up" ? 1 : 0))}</span>
@@ -713,7 +1319,7 @@ export function FeedCard({
                                     <button
                                       className={`yt-comment-action ${reply.reaction === "down" ? "is-active" : ""}`}
                                       type="button"
-                                      onClick={() => toggleReplyReaction(comment.id, reply.id, "down")}
+                                      onClick={() => void toggleReplyReaction(comment.id, reply.id, "down")}
                                     >
                                       <ThumbDownIcon />
                                       <span>{formatCompact(reply.dislikes + (reply.reaction === "down" ? 1 : 0))}</span>
@@ -766,10 +1372,6 @@ export function FeedCard({
         <span className="country-with-flag">
           <span>{post.countryName}</span>
           <span aria-hidden="true">{countryFlagFromIso2(post.countryCode)}</span>
-        </span>
-        <span className="country-support-indicator">
-          Country approval:{" "}
-          {countryApprovalPercent === null ? "n/a" : `${countryApprovalPercent.toFixed(3)}%`}
         </span>
         <span className="controversy-indicator">{approvalPercent.toFixed(3)}% approval</span>
       </footer>
