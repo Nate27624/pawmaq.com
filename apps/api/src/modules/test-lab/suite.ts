@@ -33,8 +33,13 @@ async function run(): Promise<void> {
     AUTH_SESSION_STORE: "memory",
     AUTH_SESSION_REDIS_PREFIX: "pawmaq:test:session:",
     GOOGLE_OAUTH_CLIENT_IDS: "",
+    RSS_BOTS_ENABLED: false,
+    RSS_BOTS_INTERVAL_MINUTES: 15,
+    RSS_BOTS_MAX_ITEMS_PER_FEED_PER_RUN: 20,
+    RSS_BOTS_USER_AGENT: "pawmaq-rss-bot-test/1.0",
+    RSS_BOTS_FEEDS: "",
     TEST_LAB_ENABLED: true,
-    DATABASE_URL: "postgresql://pawmaq:pawmaq@postgres:5432/pawmaq",
+    DATABASE_URL: "test-db-not-used",
     REDIS_URL: "redis://127.0.0.1:6379",
     OLLAMA_BASE_URL: "http://127.0.0.1:11434"
   };

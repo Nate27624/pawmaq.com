@@ -9,6 +9,8 @@ import type {
   ProfilePostInteractionHistory,
   ProfileLedgerUserRecord,
   ProfileProvider,
+  EnsureBotProfileInput,
+  RecordCreatedPostByHandleInput,
   RecordCreatedPostInput,
   RecordPostInteractionInput,
   ProfileUpdateInput,
@@ -292,6 +294,98 @@ export class ProfileLedgerService {
       ledger.users[userId] = record;
       ledger.username_index[record.username_normalized] = userId;
       ledger.usertag_index[record.usertag] = userId;
+      return toPublicProfile(record);
+    });
+  }
+
+  async ensureBotProfile(input: EnsureBotProfileInput): Promise<PublicProfile> {
+    return this.mutateLedger((ledger) => {
+      const nowIso = new Date().toISOString();
+      const normalizedHandle = normalizeHandle(input.handle);
+      const existingUserId = ledger.usertag_index[normalizedHandle];
+      const botSubject = input.botSubject.trim().slice(0, 240) || `rss:${normalizedHandle}`;
+      const fallbackName = input.name.trim().slice(0, 120) || "RSS Bot";
+
+      if (existingUserId) {
+        const existing = ledger.users[existingUserId];
+        if (existing) {
+          existing.provider = "bot";
+          existing.provider_subject_hash = hashProviderSubject("bot", botSubject);
+          existing.name = fallbackName;
+          if (typeof input.bio === "string") {
+            existing.bio = input.bio.trim().slice(0, 300);
+          }
+          if (typeof input.location === "string") {
+            existing.location = input.location.trim().slice(0, 120);
+          }
+          if (typeof input.avatarUrl === "string" && input.avatarUrl.trim().length > 0) {
+            existing.avatar_url = input.avatarUrl.trim();
+          }
+          if (typeof input.bannerUrl === "string" && input.bannerUrl.trim().length > 0) {
+            existing.banner_url = input.bannerUrl.trim();
+          }
+          existing.posts = normalizePostIds(existing.posts);
+          existing.post_interaction_history = normalizePostInteractionHistory(existing.post_interaction_history);
+          existing.updated_at = nowIso;
+          return toPublicProfile(existing);
+        }
+      }
+
+      const userId = this.generateUniqueUserId(ledger);
+      const baseUsername = normalizeUsername(input.username ?? normalizedHandle.replace(/^@/, "")) || "rssbot";
+      const username = this.ensureUniqueUsername(ledger, baseUsername, userId);
+      const handle = this.ensureUniqueHandle(ledger, normalizedHandle, userId);
+      const record: ProfileLedgerUserRecord = {
+        user_id: userId,
+        provider: "bot",
+        provider_subject_hash: hashProviderSubject("bot", botSubject),
+        username,
+        username_normalized: normalizeUsername(username),
+        usertag: handle,
+        name: fallbackName,
+        bio: typeof input.bio === "string" ? input.bio.trim().slice(0, 300) : "",
+        location: typeof input.location === "string" ? input.location.trim().slice(0, 120) : "",
+        avatar_url:
+          typeof input.avatarUrl === "string" && input.avatarUrl.trim().length > 0
+            ? input.avatarUrl.trim()
+            : avatarFallback(fallbackName),
+        banner_url:
+          typeof input.bannerUrl === "string" && input.bannerUrl.trim().length > 0
+            ? input.bannerUrl.trim()
+            : bannerFallback(`bot:${botSubject}`),
+        share_social_graph: false,
+        following_handles: [],
+        follower_handles: [],
+        posts: [],
+        post_interaction_history: emptyPostInteractionHistory(),
+        created_at: nowIso,
+        updated_at: nowIso
+      };
+      ledger.users[userId] = record;
+      ledger.username_index[record.username_normalized] = userId;
+      ledger.usertag_index[record.usertag] = userId;
+      return toPublicProfile(record);
+    });
+  }
+
+  async recordCreatedPostByHandle(input: RecordCreatedPostByHandleInput): Promise<PublicProfile | null> {
+    return this.mutateLedger((ledger) => {
+      const postId = input.postId.trim();
+      if (!postId) {
+        throw new Error("Post id is required.");
+      }
+      const handle = normalizeHandle(input.handle);
+      const userId = ledger.usertag_index[handle];
+      if (!userId) {
+        return null;
+      }
+      const record = ledger.users[userId];
+      if (!record) {
+        return null;
+      }
+      const nextPosts = [postId, ...normalizePostIds(record.posts).filter((existing) => existing !== postId)];
+      record.posts = nextPosts.slice(0, 50000);
+      record.updated_at = new Date().toISOString();
       return toPublicProfile(record);
     });
   }
@@ -597,7 +691,7 @@ export class ProfileLedgerService {
         if (!source || typeof source !== "object") {
           continue;
         }
-        const provider: ProfileProvider = source.provider === "google" ? "google" : "google";
+        const provider: ProfileProvider = source.provider === "bot" ? "bot" : "google";
         const legacySubject = typeof source.provider_subject === "string" ? source.provider_subject.trim() : "";
         const subjectHashRaw =
           typeof source.provider_subject_hash === "string" ? source.provider_subject_hash.trim().toLowerCase() : "";
