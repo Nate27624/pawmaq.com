@@ -71,7 +71,7 @@ To enable RSS bot seeding, set API env vars (for example in `.env`):
 RSS_BOTS_ENABLED=true
 RSS_BOTS_INTERVAL_MINUTES=15
 RSS_BOTS_MAX_ITEMS_PER_FEED_PER_RUN=0
-RSS_BOTS_FEEDS='[{"feedUrl":"https://mastodon.social/@TechCrunch.rss","handle":"@techcrunch_rss","name":"TechCrunch RSS","countryCode":"US","countryName":"United States"}]'
+RSS_BOTS_FEEDS='[{"feedUrl":"https://mastodon.social/@TechCrunch.rss","handle":"@techcrunch_rss","name":"TechCrunch RSS","countryCode":"US","countryName":"United States"},{"feedUrl":"https://mastodon.social/tags/news.rss","handle":"@mastodon_news_rss","name":"Mastodon #news","countryCode":"WW","countryName":"Worldwide"}]'
 ```
 
 To run the automated API test-lab suite:

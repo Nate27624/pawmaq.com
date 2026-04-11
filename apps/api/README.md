@@ -80,9 +80,9 @@ Environment:
 - `RSS_BOTS_INTERVAL_MINUTES` (default `15`)
 - `RSS_BOTS_MAX_ITEMS_PER_FEED_PER_RUN` (default `0`; `0` means import all available feed items)
 - `RSS_BOTS_USER_AGENT` (default `pawmaq-rss-bot/1.0 (+https://pawmaq.com)`)
-- `RSS_BOTS_FEEDS`:
+  - `RSS_BOTS_FEEDS`:
   - JSON format:
-    - `[{"feedUrl":"https://mastodon.social/@TechCrunch.rss","handle":"@techcrunch_rss","name":"TechCrunch RSS","countryCode":"US","countryName":"United States"}]`
+    - `[{"feedUrl":"https://mastodon.social/@TechCrunch.rss","handle":"@techcrunch_rss","name":"TechCrunch RSS","countryCode":"US","countryName":"United States"},{"feedUrl":"https://mastodon.social/tags/news.rss","handle":"@mastodon_news_rss","name":"Mastodon #news","countryCode":"WW","countryName":"Worldwide"}]`
   - or line/semicolon format:
     - `feedUrl|handle|name|countryCode|countryName|bio`
 

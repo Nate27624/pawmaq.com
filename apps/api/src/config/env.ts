@@ -1,5 +1,22 @@
 import { z } from "zod";
 
+const DEFAULT_RSS_BOT_FEEDS = JSON.stringify([
+  {
+    feedUrl: "https://mastodon.social/@TechCrunch.rss",
+    handle: "@techcrunch_rss",
+    name: "TechCrunch RSS",
+    countryCode: "US",
+    countryName: "United States"
+  },
+  {
+    feedUrl: "https://mastodon.social/tags/news.rss",
+    handle: "@mastodon_news_rss",
+    name: "Mastodon #news",
+    countryCode: "WW",
+    countryName: "Worldwide"
+  }
+]);
+
 function parseBoolean(value: unknown): boolean | unknown {
   if (typeof value === "boolean") {
     return value;
@@ -39,7 +56,7 @@ const envSchema = z.object({
   RSS_BOTS_INTERVAL_MINUTES: z.coerce.number().int().positive().default(15),
   RSS_BOTS_MAX_ITEMS_PER_FEED_PER_RUN: z.coerce.number().int().nonnegative().default(0),
   RSS_BOTS_USER_AGENT: z.string().default("pawmaq-rss-bot/1.0 (+https://pawmaq.com)"),
-  RSS_BOTS_FEEDS: z.string().default(""),
+  RSS_BOTS_FEEDS: z.string().default(DEFAULT_RSS_BOT_FEEDS),
   TEST_LAB_ENABLED: z.preprocess(parseBoolean, z.boolean()).default(false),
   DATABASE_URL: z.string().default("postgresql://pawmaq:pawmaq@postgres:5432/pawmaq"),
   REDIS_URL: z.string().default("redis://redis:6379"),
