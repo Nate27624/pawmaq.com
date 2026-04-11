@@ -1017,13 +1017,16 @@ class ApiError extends Error {
 }
 
 async function fetchApi<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers ?? {});
+  const hasBody = init?.body !== undefined && init?.body !== null;
+  if (hasBody && !headers.has("content-type")) {
+    headers.set("content-type", "application/json");
+  }
+
   const response = await fetch(`${API_BASE_URL}${path}`, {
     credentials: "include",
     ...init,
-    headers: {
-      "content-type": "application/json",
-      ...(init?.headers ?? {})
-    }
+    headers
   });
 
   const payload = (await response.json().catch(() => null)) as
@@ -1226,7 +1229,7 @@ async function fetchLedgerPostsFromApi(): Promise<FeedPost[]> {
   const collected: FeedPost[] = [];
   let offset = 0;
   let pageCount = 0;
-  const MAX_PAGES = 40;
+  const MAX_PAGES = 20;
 
   while (pageCount < MAX_PAGES) {
     const query = new URLSearchParams({
@@ -1237,7 +1240,12 @@ async function fetchLedgerPostsFromApi(): Promise<FeedPost[]> {
       rankLimit: "1",
       hashtagLimit: "1"
     });
-    const payload = await fetchApi<LedgerExportPostsResponse>(`/v1/ledger/export?${query.toString()}`);
+    const response = await fetch(`${API_BASE_URL}/v1/ledger/export?${query.toString()}`);
+    if (!response.ok) {
+      // Keep partial progress instead of failing the whole sync on one page.
+      break;
+    }
+    const payload = (await response.json()) as LedgerExportPostsResponse;
     const pagePosts = Object.values(payload.post_popularity_ledger.posts)
       .map((record) => feedPostFromLedgerRecord(record, nowMs))
       .filter((post): post is FeedPost => post !== null);
@@ -2314,7 +2322,12 @@ export default function App() {
       }
 
       if (nextBatch.length === 0) {
-        return current;
+        if (current.length === 0 && rankedCandidates.length > 0) {
+          // Fallback so feed does not render blank when every candidate is already marked as seen.
+          nextBatch = rankedCandidates.slice(0, LOAD_BATCH_SIZE);
+        } else {
+          return current;
+        }
       }
 
       if (nextBatch.length > 0 && !savedOnly) {
@@ -2427,7 +2440,8 @@ export default function App() {
 
   useEffect(() => {
     let canceled = false;
-    void (async () => {
+
+    async function syncLedgerPosts() {
       try {
         const ledgerPosts = await fetchLedgerPostsFromApi();
         if (canceled || ledgerPosts.length === 0) {
@@ -2437,9 +2451,22 @@ export default function App() {
       } catch {
         // Keep feed usable with local persisted posts when ledger API is unavailable.
       }
-    })();
+    }
+
+    void syncLedgerPosts();
+    const intervalId = window.setInterval(() => {
+      void syncLedgerPosts();
+    }, 45_000);
+
+    const onFocus = () => {
+      void syncLedgerPosts();
+    };
+    window.addEventListener("focus", onFocus);
+
     return () => {
       canceled = true;
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", onFocus);
     };
   }, []);
 

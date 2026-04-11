@@ -74,6 +74,9 @@ RSS_BOTS_MAX_ITEMS_PER_FEED_PER_RUN=0
 RSS_BOTS_FEEDS='[{"feedUrl":"https://mastodon.social/@TechCrunch.rss","handle":"@techcrunch_rss","name":"TechCrunch RSS","countryCode":"US","countryName":"United States"},{"feedUrl":"https://mastodon.social/tags/news.rss","handle":"@mastodon_news_rss","name":"Mastodon #news","countryCode":"WW","countryName":"Worldwide"}]'
 ```
 
+Defaults now enable RSS bots in local development with those two feeds. Session storage defaults to in-memory, so
+local startup does not require Redis.
+
 To run the automated API test-lab suite:
 
 ```bash

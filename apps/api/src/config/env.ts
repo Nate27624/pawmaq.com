@@ -49,17 +49,17 @@ const envSchema = z.object({
   PRE_LEDGER_POSTS_PER_MINUTE_PER_IP: z.coerce.number().int().positive().default(90),
   PRE_LEDGER_MEDIA_UPLOADS_PER_10M_PER_IP: z.coerce.number().int().positive().default(20),
   AUTH_SESSION_TTL_HOURS: z.coerce.number().int().positive().default(168),
-  AUTH_SESSION_STORE: z.enum(["auto", "memory", "redis"]).default("auto"),
+  AUTH_SESSION_STORE: z.enum(["auto", "memory", "redis"]).default("memory"),
   AUTH_SESSION_REDIS_PREFIX: z.string().default("pawmaq:session:"),
   GOOGLE_OAUTH_CLIENT_IDS: z.string().default(""),
-  RSS_BOTS_ENABLED: z.preprocess(parseBoolean, z.boolean()).default(false),
+  RSS_BOTS_ENABLED: z.preprocess(parseBoolean, z.boolean()).default(true),
   RSS_BOTS_INTERVAL_MINUTES: z.coerce.number().int().positive().default(15),
   RSS_BOTS_MAX_ITEMS_PER_FEED_PER_RUN: z.coerce.number().int().nonnegative().default(0),
   RSS_BOTS_USER_AGENT: z.string().default("pawmaq-rss-bot/1.0 (+https://pawmaq.com)"),
   RSS_BOTS_FEEDS: z.string().default(DEFAULT_RSS_BOT_FEEDS),
   TEST_LAB_ENABLED: z.preprocess(parseBoolean, z.boolean()).default(false),
   DATABASE_URL: z.string().default("postgresql://pawmaq:pawmaq@postgres:5432/pawmaq"),
-  REDIS_URL: z.string().default("redis://redis:6379"),
+  REDIS_URL: z.string().default(""),
   OLLAMA_BASE_URL: z.string().url().default("http://ollama:11434")
 });
 

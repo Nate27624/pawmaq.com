@@ -57,7 +57,7 @@ When throttled, the API returns `429 rate_limited` (with `retry_after_ms`). When
 
 - `GOOGLE_OAUTH_CLIENT_IDS` (comma-separated OAuth web client IDs allowed by the API)
 - `AUTH_SESSION_TTL_HOURS` (defaults to `168`)
-- `AUTH_SESSION_STORE` (`auto`, `memory`, or `redis`; defaults to `auto`)
+- `AUTH_SESSION_STORE` (`auto`, `memory`, or `redis`; defaults to `memory`)
 - `AUTH_SESSION_REDIS_PREFIX` (defaults to `pawmaq:session:`)
 - `REDIS_URL` (required when `AUTH_SESSION_STORE=redis`)
 - `TEST_LAB_ENABLED` (`true`/`false`, defaults `false`; ignored in production)
@@ -76,11 +76,11 @@ named bot accounts persisted in the profile ledger.
 
 Environment:
 
-- `RSS_BOTS_ENABLED` (`true`/`false`, default `false`)
+- `RSS_BOTS_ENABLED` (`true`/`false`, default `true`)
 - `RSS_BOTS_INTERVAL_MINUTES` (default `15`)
 - `RSS_BOTS_MAX_ITEMS_PER_FEED_PER_RUN` (default `0`; `0` means import all available feed items)
 - `RSS_BOTS_USER_AGENT` (default `pawmaq-rss-bot/1.0 (+https://pawmaq.com)`)
-  - `RSS_BOTS_FEEDS`:
+- `RSS_BOTS_FEEDS` (defaults to TechCrunch + Mastodon `#news`):
   - JSON format:
     - `[{"feedUrl":"https://mastodon.social/@TechCrunch.rss","handle":"@techcrunch_rss","name":"TechCrunch RSS","countryCode":"US","countryName":"United States"},{"feedUrl":"https://mastodon.social/tags/news.rss","handle":"@mastodon_news_rss","name":"Mastodon #news","countryCode":"WW","countryName":"Worldwide"}]`
   - or line/semicolon format:
