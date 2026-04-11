@@ -78,7 +78,7 @@ interface StoredAuthProfile {
 
 interface ServerLedgerProfile {
   userId: string;
-  provider: "google";
+  provider: "google" | "bot";
   name: string;
   username: string;
   handle: string;
@@ -109,6 +109,53 @@ interface ProfileEditorDraft {
 interface AuthSessionResponse {
   ok: boolean;
   profile: ServerLedgerProfile;
+}
+
+interface LedgerPostContentBlockText {
+  type: "text";
+  text: string;
+}
+
+interface LedgerPostContentBlockMedia {
+  type: "media";
+  media_kind: "video" | "gif" | "png";
+  url: string;
+}
+
+interface LedgerPostRecord {
+  post_id: string;
+  created_at: string;
+  author:
+    | {
+        mode: "named";
+        username: string;
+        usertag: string;
+      }
+    | {
+        mode: "anonymous";
+      };
+  content_blocks: Array<LedgerPostContentBlockText | LedgerPostContentBlockMedia>;
+  location: {
+    country: string;
+    country_code: string;
+  };
+  engagement: {
+    likes: number;
+    neutral: number;
+    dislikes: number;
+    comments_count: number;
+  };
+}
+
+interface LedgerExportPostsResponse {
+  post_popularity_ledger: {
+    posts: Record<string, LedgerPostRecord>;
+  };
+  pagination?: {
+    posts?: {
+      next_offset?: number | null;
+    };
+  };
 }
 
 interface PrivateCryptoBundlePayload {
@@ -1117,6 +1164,95 @@ async function recordCreatedPostForProfile(
   });
 }
 
+function ledgerCreatedAtMs(iso: string, nowMs: number): number {
+  const parsed = new Date(iso).getTime();
+  if (!Number.isFinite(parsed)) {
+    return nowMs;
+  }
+  return parsed;
+}
+
+function feedPostFromLedgerRecord(record: LedgerPostRecord, nowMs: number): FeedPost | null {
+  const postId = typeof record.post_id === "string" ? record.post_id.trim() : "";
+  if (!postId) {
+    return null;
+  }
+
+  const textBlock = record.content_blocks.find((block): block is LedgerPostContentBlockText => block.type === "text");
+  const mediaBlock = record.content_blocks.find((block): block is LedgerPostContentBlockMedia => block.type === "media");
+  const caption = typeof textBlock?.text === "string" ? textBlock.text : "";
+  if (!caption.trim()) {
+    return null;
+  }
+
+  const createdAtMs = ledgerCreatedAtMs(record.created_at, nowMs);
+  const ageHours = Math.max(0, (nowMs - createdAtMs) / (60 * 60 * 1000));
+  const isAnonymous = record.author.mode === "anonymous";
+  const namedAuthor = record.author.mode === "named" ? record.author : null;
+  const upvotes = Number.isFinite(record.engagement.likes) ? Math.max(0, Math.floor(record.engagement.likes)) : 0;
+  const neutralVotes = Number.isFinite(record.engagement.neutral)
+    ? Math.max(0, Math.floor(record.engagement.neutral))
+    : 0;
+  const downvotes = Number.isFinite(record.engagement.dislikes) ? Math.max(0, Math.floor(record.engagement.dislikes)) : 0;
+
+  return {
+    id: postId,
+    author: isAnonymous ? "Anonymous" : (namedAuthor?.username ?? "RSS Bot"),
+    handle: isAnonymous ? "@anonymous" : normalizeHandle(namedAuthor?.usertag ?? "@rssbot"),
+    isAnonymous,
+    caption,
+    originalLanguage: "English",
+    countryCode: (record.location.country_code ?? "WW").trim().toUpperCase() || "WW",
+    countryName: (record.location.country ?? "Worldwide").trim() || "Worldwide",
+    createdAt: createdAtLabelFromHoursAgo(ageHours),
+    createdAtHoursAgo: ageHours,
+    createdAtMs,
+    videoUrl: mediaBlock?.url,
+    mediaType: mediaBlock?.media_kind,
+    likes: upvotes,
+    comments: Number.isFinite(record.engagement.comments_count)
+      ? Math.max(0, Math.floor(record.engagement.comments_count))
+      : 0,
+    reposts: 0,
+    views: 0,
+    upvotes,
+    neutralVotes,
+    downvotes
+  };
+}
+
+async function fetchLedgerPostsFromApi(): Promise<FeedPost[]> {
+  const nowMs = Date.now();
+  const collected: FeedPost[] = [];
+  let offset = 0;
+  let pageCount = 0;
+  const MAX_PAGES = 40;
+
+  while (pageCount < MAX_PAGES) {
+    const query = new URLSearchParams({
+      usersOffset: "0",
+      usersLimit: "1",
+      postsOffset: String(offset),
+      postsLimit: "250",
+      rankLimit: "1",
+      hashtagLimit: "1"
+    });
+    const payload = await fetchApi<LedgerExportPostsResponse>(`/v1/ledger/export?${query.toString()}`);
+    const pagePosts = Object.values(payload.post_popularity_ledger.posts)
+      .map((record) => feedPostFromLedgerRecord(record, nowMs))
+      .filter((post): post is FeedPost => post !== null);
+    collected.push(...pagePosts);
+    const nextOffset = payload.pagination?.posts?.next_offset;
+    if (typeof nextOffset !== "number") {
+      break;
+    }
+    offset = nextOffset;
+    pageCount += 1;
+  }
+
+  return uniquePosts(collected).sort((left, right) => right.createdAtMs - left.createdAtMs);
+}
+
 function googleApiFromWindow(): GoogleApi | null {
   if (typeof window === "undefined") {
     return null;
@@ -2090,9 +2226,10 @@ export default function App() {
 
     let basePosts: FeedPost[];
     if (activeTab === "following") {
-      basePosts = maybeCountryFiltered.filter(
+      const followedOnly = maybeCountryFiltered.filter(
         (post) => followingHandles.has(post.handle) || post.handle === viewerHandle
       );
+      basePosts = followedOnly.length > 0 ? followedOnly : maybeCountryFiltered;
     } else {
       basePosts = maybeCountryFiltered;
     }
@@ -2287,6 +2424,24 @@ export default function App() {
   useEffect(() => {
     writePersistedPosts(posts);
   }, [posts]);
+
+  useEffect(() => {
+    let canceled = false;
+    void (async () => {
+      try {
+        const ledgerPosts = await fetchLedgerPostsFromApi();
+        if (canceled || ledgerPosts.length === 0) {
+          return;
+        }
+        setPosts((current) => uniquePosts([...current, ...ledgerPosts]).sort((left, right) => right.createdAtMs - left.createdAtMs));
+      } catch {
+        // Keep feed usable with local persisted posts when ledger API is unavailable.
+      }
+    })();
+    return () => {
+      canceled = true;
+    };
+  }, []);
 
   useEffect(() => {
     writeOwnServerProfileCache(ownServerProfile);

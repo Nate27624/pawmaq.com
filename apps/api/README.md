@@ -69,6 +69,25 @@ Security behavior:
 - Google token audience is checked against `GOOGLE_OAUTH_CLIENT_IDS`.
 - Session records are persisted in Redis when available, so sessions survive API restarts.
 
+## RSS Bot Ingestion
+
+The API can ingest public RSS feeds (including Mastodon profile feeds) and mirror them into the post ledger using
+named bot accounts persisted in the profile ledger.
+
+Environment:
+
+- `RSS_BOTS_ENABLED` (`true`/`false`, default `false`)
+- `RSS_BOTS_INTERVAL_MINUTES` (default `15`)
+- `RSS_BOTS_MAX_ITEMS_PER_FEED_PER_RUN` (default `0`; `0` means import all available feed items)
+- `RSS_BOTS_USER_AGENT` (default `pawmaq-rss-bot/1.0 (+https://pawmaq.com)`)
+- `RSS_BOTS_FEEDS`:
+  - JSON format:
+    - `[{"feedUrl":"https://mastodon.social/@TechCrunch.rss","handle":"@techcrunch_rss","name":"TechCrunch RSS","countryCode":"US","countryName":"United States"}]`
+  - or line/semicolon format:
+    - `feedUrl|handle|name|countryCode|countryName|bio`
+
+When enabled, RSS sync runs once at API startup, then on the configured interval.
+
 ## Test Lab Suite
 
 Run the scenario suite without starting an external server:

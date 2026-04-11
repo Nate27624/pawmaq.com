@@ -13,7 +13,7 @@ import {
 } from "../intake/pre-ledger-queue.js";
 import type { ProfileLedgerService } from "../profiles/service.js";
 import type { ProfileLedger, ProfileLedgerUserRecord } from "../profiles/types.js";
-import { PostPopularityLedgerService } from "./service.js";
+import type { PostPopularityLedgerService } from "./service.js";
 import type { PostLedgerRecord, PostPopularityLedger } from "./types.js";
 
 const postEventSchema = z.object({
@@ -302,11 +302,10 @@ function pruneExportRateCounters(
 export async function registerLedgerRoutes(
   app: FastifyInstance,
   profileLedger: ProfileLedgerService,
-  postLedgerPath: string,
+  postLedger: PostPopularityLedgerService,
   preLedgerQueue: PreLedgerQueueService,
   authSessions: AuthSessionService
 ): Promise<void> {
-  const postLedger = new PostPopularityLedgerService(postLedgerPath);
   const exportRateCounters = new Map<string, LedgerExportRateCounter>();
 
   async function requireViewerProfile(request: FastifyRequest, reply: FastifyReply) {

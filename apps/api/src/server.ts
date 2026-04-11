@@ -8,9 +8,11 @@ import { AuthSessionService } from "./modules/auth/service.js";
 import { registerHealthRoutes } from "./modules/health/routes.js";
 import { PreLedgerQueueService } from "./modules/intake/pre-ledger-queue.js";
 import { registerLedgerRoutes } from "./modules/ledger/routes.js";
+import { PostPopularityLedgerService } from "./modules/ledger/service.js";
 import { registerMediaRoutes } from "./modules/media/routes.js";
 import { registerModerationRoutes } from "./modules/moderation/routes.js";
 import { registerProfileRoutes } from "./modules/profiles/routes.js";
+import { RssBotIngestionService } from "./modules/rss-bots/service.js";
 import { registerTestLabRoutes } from "./modules/test-lab/routes.js";
 import { ProfileLedgerService } from "./modules/profiles/service.js";
 
@@ -101,6 +103,7 @@ export async function buildApp(env: AppEnv) {
   });
 
   const profileLedgerService = new ProfileLedgerService(env.PROFILE_LEDGER_PATH);
+  const postLedgerService = new PostPopularityLedgerService(env.POST_LEDGER_PATH);
   const authSessions = await AuthSessionService.create({
     sessionTtlMs: env.AUTH_SESSION_TTL_HOURS * 60 * 60 * 1000,
     googleOauthClientIdsRaw: env.GOOGLE_OAUTH_CLIENT_IDS,
@@ -139,10 +142,29 @@ export async function buildApp(env: AppEnv) {
     env.MEDIA_PUBLIC_BASE_URL
   );
   await registerProfileRoutes(app, profileLedgerService, authSessions);
-  await registerLedgerRoutes(app, profileLedgerService, env.POST_LEDGER_PATH, preLedgerQueue, authSessions);
+  await registerLedgerRoutes(app, profileLedgerService, postLedgerService, preLedgerQueue, authSessions);
   if (env.TEST_LAB_ENABLED && env.NODE_ENV !== "production") {
     await registerTestLabRoutes(app, env.POST_LEDGER_PATH);
   }
+
+  const rssBots = new RssBotIngestionService({
+    enabled: env.RSS_BOTS_ENABLED,
+    intervalMinutes: env.RSS_BOTS_INTERVAL_MINUTES,
+    maxItemsPerFeedPerRun: env.RSS_BOTS_MAX_ITEMS_PER_FEED_PER_RUN,
+    userAgent: env.RSS_BOTS_USER_AGENT,
+    feedsRaw: env.RSS_BOTS_FEEDS,
+    postLedger: postLedgerService,
+    profileLedger: profileLedgerService,
+    logger: {
+      info: (message) => app.log.info(message),
+      warn: (message) => app.log.warn(message),
+      error: (message) => app.log.error(message)
+    }
+  });
+  app.addHook("onClose", async () => {
+    await rssBots.stop();
+  });
+  await rssBots.start();
 
   return app;
 }

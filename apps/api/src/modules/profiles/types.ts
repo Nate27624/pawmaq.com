@@ -1,4 +1,4 @@
-export type ProfileProvider = "google";
+export type ProfileProvider = "google" | "bot";
 export type ProfilePostInteractionAction =
   | "seen"
   | "liked"
@@ -115,6 +115,22 @@ export interface RecordCreatedPostInput {
   subject: string;
   postId: string;
   anonymous?: boolean;
+}
+
+export interface EnsureBotProfileInput {
+  handle: string;
+  name: string;
+  username?: string;
+  bio?: string;
+  location?: string;
+  avatarUrl?: string;
+  bannerUrl?: string;
+  botSubject: string;
+}
+
+export interface RecordCreatedPostByHandleInput {
+  handle: string;
+  postId: string;
 }
 
 export interface PublicProfile {

@@ -46,6 +46,7 @@ Build a free, open-source community platform that combines:
 - Posting, commenting, voting, and media uploads require sign-in (Google OAuth supported)
 - Hidden ledger route at `/ledger` (not linked in the main UI) with searchable profile + post ledger export
 - Interactive test dashboard at `/test-lab` for custom test users/posts/comments/replies and scenario execution
+- Optional RSS bot ingestion (Mastodon-compatible RSS) to seed feed content into the ledgers
 
 ## Local Development
 
@@ -63,6 +64,15 @@ http://localhost:5173
 ```
 
 `dev:api` is required for server-persisted profile customization and follow state.
+
+To enable RSS bot seeding, set API env vars (for example in `.env`):
+
+```bash
+RSS_BOTS_ENABLED=true
+RSS_BOTS_INTERVAL_MINUTES=15
+RSS_BOTS_MAX_ITEMS_PER_FEED_PER_RUN=0
+RSS_BOTS_FEEDS='[{"feedUrl":"https://mastodon.social/@TechCrunch.rss","handle":"@techcrunch_rss","name":"TechCrunch RSS","countryCode":"US","countryName":"United States"}]'
+```
 
 To run the automated API test-lab suite:
 
