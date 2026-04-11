@@ -80,9 +80,9 @@ Environment:
 - `RSS_BOTS_INTERVAL_MINUTES` (default `15`)
 - `RSS_BOTS_MAX_ITEMS_PER_FEED_PER_RUN` (default `0`; `0` means import all available feed items)
 - `RSS_BOTS_USER_AGENT` (default `pawmaq-rss-bot/1.0 (+https://pawmaq.com)`)
-- `RSS_BOTS_FEEDS` (defaults to TechCrunch + Mastodon `#news`):
+- `RSS_BOTS_FEEDS` (defaults to a curated mainstream news set):
   - JSON format:
-    - `[{"feedUrl":"https://mastodon.social/@TechCrunch.rss","handle":"@techcrunch_rss","name":"TechCrunch RSS","countryCode":"US","countryName":"United States"},{"feedUrl":"https://mastodon.social/tags/news.rss","handle":"@mastodon_news_rss","name":"Mastodon #news","countryCode":"WW","countryName":"Worldwide"}]`
+    - `[{"feedUrl":"https://feeds.washingtonpost.com/rss/world","handle":"@washpost_world_rss","name":"Washington Post World","countryCode":"US","countryName":"United States"},{"feedUrl":"https://feeds.npr.org/1001/rss.xml","handle":"@npr_news_rss","name":"NPR News","countryCode":"US","countryName":"United States"},{"feedUrl":"https://feeds.bbci.co.uk/news/world/rss.xml","handle":"@bbc_world_rss","name":"BBC World News","countryCode":"GB","countryName":"United Kingdom"},{"feedUrl":"https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml","handle":"@nytimes_top_rss","name":"NYT Top Stories","countryCode":"US","countryName":"United States"},{"feedUrl":"https://www.theguardian.com/world/rss","handle":"@guardian_world_rss","name":"The Guardian World","countryCode":"WW","countryName":"Worldwide"}]`
   - or line/semicolon format:
     - `feedUrl|handle|name|countryCode|countryName|bio`
 

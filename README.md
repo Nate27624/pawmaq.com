@@ -71,10 +71,10 @@ To enable RSS bot seeding, set API env vars (for example in `.env`):
 RSS_BOTS_ENABLED=true
 RSS_BOTS_INTERVAL_MINUTES=15
 RSS_BOTS_MAX_ITEMS_PER_FEED_PER_RUN=0
-RSS_BOTS_FEEDS='[{"feedUrl":"https://mastodon.social/@TechCrunch.rss","handle":"@techcrunch_rss","name":"TechCrunch RSS","countryCode":"US","countryName":"United States"},{"feedUrl":"https://mastodon.social/tags/news.rss","handle":"@mastodon_news_rss","name":"Mastodon #news","countryCode":"WW","countryName":"Worldwide"}]'
+RSS_BOTS_FEEDS='[{"feedUrl":"https://feeds.washingtonpost.com/rss/world","handle":"@washpost_world_rss","name":"Washington Post World","countryCode":"US","countryName":"United States"},{"feedUrl":"https://feeds.npr.org/1001/rss.xml","handle":"@npr_news_rss","name":"NPR News","countryCode":"US","countryName":"United States"},{"feedUrl":"https://feeds.bbci.co.uk/news/world/rss.xml","handle":"@bbc_world_rss","name":"BBC World News","countryCode":"GB","countryName":"United Kingdom"},{"feedUrl":"https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml","handle":"@nytimes_top_rss","name":"NYT Top Stories","countryCode":"US","countryName":"United States"},{"feedUrl":"https://www.theguardian.com/world/rss","handle":"@guardian_world_rss","name":"The Guardian World","countryCode":"WW","countryName":"Worldwide"}]'
 ```
 
-Defaults now enable RSS bots in local development with those two feeds. Session storage defaults to in-memory, so
+Defaults now enable RSS bots in local development with these curated mainstream feeds. Session storage defaults to in-memory, so
 local startup does not require Redis.
 
 To run the automated API test-lab suite:

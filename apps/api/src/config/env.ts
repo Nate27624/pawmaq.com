@@ -2,16 +2,37 @@ import { z } from "zod";
 
 const DEFAULT_RSS_BOT_FEEDS = JSON.stringify([
   {
-    feedUrl: "https://mastodon.social/@TechCrunch.rss",
-    handle: "@techcrunch_rss",
-    name: "TechCrunch RSS",
+    feedUrl: "https://feeds.washingtonpost.com/rss/world",
+    handle: "@washpost_world_rss",
+    name: "Washington Post World",
     countryCode: "US",
     countryName: "United States"
   },
   {
-    feedUrl: "https://mastodon.social/tags/news.rss",
-    handle: "@mastodon_news_rss",
-    name: "Mastodon #news",
+    feedUrl: "https://feeds.npr.org/1001/rss.xml",
+    handle: "@npr_news_rss",
+    name: "NPR News",
+    countryCode: "US",
+    countryName: "United States"
+  },
+  {
+    feedUrl: "https://feeds.bbci.co.uk/news/world/rss.xml",
+    handle: "@bbc_world_rss",
+    name: "BBC World News",
+    countryCode: "GB",
+    countryName: "United Kingdom"
+  },
+  {
+    feedUrl: "https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml",
+    handle: "@nytimes_top_rss",
+    name: "NYT Top Stories",
+    countryCode: "US",
+    countryName: "United States"
+  },
+  {
+    feedUrl: "https://www.theguardian.com/world/rss",
+    handle: "@guardian_world_rss",
+    name: "The Guardian World",
     countryCode: "WW",
     countryName: "Worldwide"
   }
