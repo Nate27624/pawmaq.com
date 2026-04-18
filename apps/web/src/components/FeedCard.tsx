@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { API_BASE_URL } from "../config/api";
 import type { FeedPost } from "../types";
 
@@ -7,10 +7,15 @@ interface FeedCardProps {
   nativeLanguage: string;
   isSaved: boolean;
   onToggleSave: (postId: string) => void;
+  onOpenPost?: (postId: string) => void;
+  forceCommentsOpen?: boolean;
+  disableHeaderOpen?: boolean;
+  isFullscreen?: boolean;
   isSignedIn: boolean;
+  onSignInWithPasskey: () => Promise<boolean>;
+  onCreatePasskeyOnDevice: () => Promise<boolean>;
+  passkeySignInEnabled: boolean;
   viewerHandle: string;
-  isAuthorFollowed: boolean;
-  onToggleFollowAuthor: (handle: string) => void;
   onOpenAuthorProfile: (name: string, handle: string) => void;
   reactionState: ReactionState;
   isReposted: boolean;
@@ -148,9 +153,30 @@ interface PostLinkPreview {
   title: string;
   subtitle: string;
   imageUrl?: string;
+  faviconUrl?: string;
+  siteName?: string;
+  authorName?: string;
   embedUrl?: string;
   embedKind?: "youtube" | "x" | "tiktok" | "instagram";
 }
+
+interface LinkPreviewMetadata {
+  canonicalUrl: string;
+  domain: string;
+  title: string;
+  description: string;
+  imageUrl: string | null;
+  faviconUrl: string | null;
+  siteName?: string;
+  authorName?: string;
+}
+
+interface LinkPreviewMetadataResponse {
+  ok: boolean;
+  preview?: Partial<LinkPreviewMetadata>;
+}
+
+const linkPreviewMetadataCache = new Map<string, Promise<LinkPreviewMetadata | null>>();
 
 function initialsFromName(name: string): string {
   const parts = name.trim().split(/\s+/);
@@ -275,6 +301,106 @@ function countryFlagFromIso2(code: string): string {
   );
 }
 
+function countryNameFromIso2(code: string): string | null {
+  const normalized = code.trim().toUpperCase();
+  if (!/^[A-Z]{2}$/.test(normalized)) {
+    return null;
+  }
+  try {
+    const display = new Intl.DisplayNames(["en"], { type: "region" }).of(normalized);
+    return typeof display === "string" && display.trim().length > 0 ? display : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseLocationLabel(label: string): {
+  countryCandidate: string | null;
+  cityCandidate: string | null;
+  regionCandidate: string | null;
+} {
+  const parts = label
+    .split(",")
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+  if (parts.length === 0) {
+    return {
+      countryCandidate: null,
+      cityCandidate: null,
+      regionCandidate: null
+    };
+  }
+  return {
+    countryCandidate: parts[parts.length - 1] ?? null,
+    cityCandidate: parts.length >= 2 ? parts[0] ?? null : null,
+    regionCandidate: parts.length >= 3 ? parts[1] ?? null : null
+  };
+}
+
+function isLikelyPlaceName(value: string | null): boolean {
+  if (!value) {
+    return false;
+  }
+  const trimmed = value.trim();
+  if (trimmed.length < 2 || trimmed.length > 80) {
+    return false;
+  }
+  if (/\d/.test(trimmed)) {
+    return false;
+  }
+  return /^[\p{L}\p{M} .'\-()]+$/u.test(trimmed);
+}
+
+function isLikelyCityName(value: string | null): boolean {
+  if (!isLikelyPlaceName(value)) {
+    return false;
+  }
+  const normalized = value!.toLowerCase();
+  if (/\b(state|province|region|county|district|territory)\b/.test(normalized)) {
+    return false;
+  }
+  return true;
+}
+
+function wikipediaUrlForLocation(post: FeedPost): string | null {
+  if (post.countryCode === "ANON") {
+    return null;
+  }
+  const parsed = parseLocationLabel(post.countryName);
+  const country =
+    countryNameFromIso2(post.countryCode) ??
+    parsed.countryCandidate ??
+    post.countryName.trim() ??
+    "";
+
+  if (!isLikelyPlaceName(country)) {
+    return null;
+  }
+
+  const city = isLikelyCityName(parsed.cityCandidate) ? parsed.cityCandidate : null;
+  const region = isLikelyPlaceName(parsed.regionCandidate) ? parsed.regionCandidate : null;
+
+  if (city) {
+    const cityQuery = [city, region, country].filter((part) => part && part.length > 0).join(", ");
+    return `https://en.wikipedia.org/wiki/Special:Search?search=${encodeURIComponent(cityQuery)}&go=Go`;
+  }
+
+  return `https://en.wikipedia.org/wiki/${encodeURIComponent(country.replace(/\s+/g, "_"))}`;
+}
+
+function displayLocationText(post: FeedPost): string {
+  if (post.countryCode === "ANON") {
+    return post.countryName;
+  }
+  const parsed = parseLocationLabel(post.countryName);
+  const country = countryNameFromIso2(post.countryCode) ?? parsed.countryCandidate ?? post.countryName;
+  const city = isLikelyCityName(parsed.cityCandidate) ? parsed.cityCandidate : null;
+  if (city) {
+    return `${city}, ${country}`;
+  }
+  return country;
+}
+
 function autoResizeTextarea(textarea: HTMLTextAreaElement) {
   const priorHeight = textarea.offsetHeight;
   textarea.style.height = "auto";
@@ -286,25 +412,50 @@ function sanitizeDetectedUrl(rawUrl: string): string {
   return rawUrl.replace(/[),.!?;:]+$/g, "");
 }
 
+function hasRenderableHostname(parsed: URL): boolean {
+  const host = parsed.hostname.trim().toLowerCase();
+  if (!host || host.endsWith(".")) {
+    return false;
+  }
+  if (!host.includes(".")) {
+    return false;
+  }
+  const tld = host.split(".").at(-1) ?? "";
+  return /^[a-z]{2,63}$/i.test(tld);
+}
+
 function extractFirstUrl(text: string): string | null {
-  const match = text.match(/https?:\/\/[^\s<>"'`]+/i);
-  if (!match?.[0]) {
-    return null;
+  const matches = text.match(/https?:\/\/[^\s<>"'`]+/gi) ?? [];
+  for (const candidate of matches) {
+    const sanitized = sanitizeDetectedUrl(candidate);
+    try {
+      const parsed = new URL(sanitized);
+      if (hasRenderableHostname(parsed)) {
+        return parsed.href;
+      }
+    } catch {
+      // Continue scanning for the next URL candidate.
+    }
   }
-  const sanitized = sanitizeDetectedUrl(match[0]);
-  try {
-    const parsed = new URL(sanitized);
-    return parsed.href;
-  } catch {
-    return null;
-  }
+  return null;
 }
 
 function removeUrlsFromCaption(text: string): string {
   const withoutUrls = text.replace(/https?:\/\/[^\s<>"'`]+/gi, "");
-  return withoutUrls
-    .replace(/[ \t]+\n/g, "\n")
+  return normalizeCaptionForDisplay(withoutUrls);
+}
+
+function normalizeCaptionForDisplay(value: string): string {
+  return value
+    .replace(/[\u00A0\u2007\u202F]/g, " ")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/[ \t\u00A0\u2007\u202F]*\n[ \t\u00A0\u2007\u202F]*/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
+    .replace(/[ \t\u00A0\u2007\u202F]{2,}/g, " ")
+    .replace(/\s+([,.;!?])/g, "$1")
+    .replace(/([([{])\s+/g, "$1")
+    .replace(/\s+([)\]}])/g, "$1")
     .trim();
 }
 
@@ -381,15 +532,138 @@ function instagramMediaFromUrl(url: URL): { kind: "reel" | "p" | "tv"; code: str
 
 function titleFromUrlPath(url: URL): string {
   const path = url.pathname.replace(/\/+$/, "");
+  const host = url.hostname.replace(/^www\./, "");
   if (!path || path === "/") {
-    return `Open ${url.hostname.replace(/^www\./, "")}`;
+    return `Article on ${host}`;
   }
   try {
-    const decoded = decodeURIComponent(path);
-    return decoded.length > 72 ? `${decoded.slice(0, 69)}...` : decoded;
+    const segments = decodeURIComponent(path)
+      .split("/")
+      .map((segment) => segment.trim())
+      .filter((segment) => segment.length > 0);
+    const rawSegment = segments[segments.length - 1] ?? "";
+    const cleanedSegment = rawSegment
+      .replace(/\.(html?|php|asp|aspx|jsp|json|xml|rss)$/i, "")
+      .replace(/[-_+]+/g, " ")
+      .replace(/\s{2,}/g, " ")
+      .trim();
+    if (cleanedSegment.length < 4 || /^https?:\/\//i.test(cleanedSegment)) {
+      return `Article on ${host}`;
+    }
+    const candidate =
+      cleanedSegment.length > 72 ? `${cleanedSegment.slice(0, 69).trim()}...` : cleanedSegment;
+    return candidate;
   } catch {
-    return path.length > 72 ? `${path.slice(0, 69)}...` : path;
+    return `Article on ${host}`;
   }
+}
+
+function fallbackPreviewImage(urlText: string): string {
+  return `https://www.google.com/s2/favicons?sz=256&domain_url=${encodeURIComponent(urlText)}`;
+}
+
+function defaultPreviewSubtitle(url: URL): string {
+  const host = url.hostname.replace(/^www\./i, "");
+  return `Open on ${host}`;
+}
+
+function isLowInformationPreviewText(value: string | null | undefined): boolean {
+  const normalized = (value ?? "").trim();
+  if (normalized.length < 8) {
+    return true;
+  }
+  if (/^https?:\/\//i.test(normalized)) {
+    return true;
+  }
+  if (/^\/[^ ]+/.test(normalized)) {
+    return true;
+  }
+  if (/\.(html?|xml|rss|php|aspx?|json)$/i.test(normalized)) {
+    return true;
+  }
+  if (!/\s/.test(normalized) && normalized.length > 24) {
+    return true;
+  }
+  if (!/[a-z]/i.test(normalized)) {
+    return true;
+  }
+  return false;
+}
+
+function displayUrlFromHref(href: string): string {
+  try {
+    const parsed = new URL(href);
+    const host = parsed.hostname.replace(/^www\./i, "");
+    const path = parsed.pathname === "/" ? "" : parsed.pathname;
+    const preview = `${host}${path}`.replace(/\/{2,}/g, "/");
+    if (preview.length <= 90) {
+      return preview;
+    }
+    return `${preview.slice(0, 87)}...`;
+  } catch {
+    return href;
+  }
+}
+
+async function fetchLinkPreviewMetadata(url: string): Promise<LinkPreviewMetadata | null> {
+  const cached = linkPreviewMetadataCache.get(url);
+  if (cached) {
+    return cached;
+  }
+
+  const promise = (async () => {
+    const response = await fetch(`${API_BASE_URL}/v1/links/preview?url=${encodeURIComponent(url)}`);
+    if (!response.ok) {
+      return null;
+    }
+    const payload = (await response.json().catch(() => null)) as LinkPreviewMetadataResponse | null;
+    const preview = payload?.preview;
+    if (!payload?.ok || !preview || typeof preview !== "object") {
+      return null;
+    }
+    if (
+      typeof preview.canonicalUrl !== "string" ||
+      typeof preview.domain !== "string" ||
+      typeof preview.title !== "string" ||
+      typeof preview.description !== "string"
+    ) {
+      return null;
+    }
+    return {
+      canonicalUrl: preview.canonicalUrl,
+      domain: preview.domain,
+      title: preview.title,
+      description: preview.description,
+      imageUrl: typeof preview.imageUrl === "string" ? preview.imageUrl : null,
+      faviconUrl: typeof preview.faviconUrl === "string" ? preview.faviconUrl : null,
+      siteName: typeof preview.siteName === "string" ? preview.siteName : undefined,
+      authorName: typeof preview.authorName === "string" ? preview.authorName : undefined
+    };
+  })().catch(() => null);
+
+  linkPreviewMetadataCache.set(url, promise);
+  return promise;
+}
+
+async function hydratePostLinkPreview(basePreview: PostLinkPreview): Promise<PostLinkPreview> {
+  const metadata = await fetchLinkPreviewMetadata(basePreview.href);
+  if (!metadata) {
+    return {
+      ...basePreview,
+      imageUrl: basePreview.imageUrl ?? fallbackPreviewImage(basePreview.href)
+    };
+  }
+  return {
+    ...basePreview,
+    href: metadata.canonicalUrl || basePreview.href,
+    domain: metadata.domain || basePreview.domain,
+    title: !isLowInformationPreviewText(metadata.title) ? metadata.title : basePreview.title,
+    subtitle: !isLowInformationPreviewText(metadata.description) ? metadata.description : basePreview.subtitle,
+    imageUrl: metadata.imageUrl ?? basePreview.imageUrl ?? metadata.faviconUrl ?? fallbackPreviewImage(basePreview.href),
+    faviconUrl: metadata.faviconUrl ?? basePreview.faviconUrl,
+    siteName: metadata.siteName ?? basePreview.siteName,
+    authorName: metadata.authorName ?? basePreview.authorName
+  };
 }
 
 function buildPostLinkPreview(urlText: string): PostLinkPreview | null {
@@ -405,8 +679,10 @@ function buildPostLinkPreview(urlText: string): PostLinkPreview | null {
         href: parsed.href,
         domain: "youtube.com",
         title: "YouTube video",
-        subtitle: parsed.href,
+        subtitle: "Watch on YouTube",
         imageUrl: `https://i.ytimg.com/vi/${youtubeId}/hqdefault.jpg`,
+        faviconUrl: fallbackPreviewImage(parsed.href),
+        siteName: "YouTube",
         embedUrl: `https://www.youtube.com/embed/${youtubeId}`,
         embedKind: "youtube"
       };
@@ -419,7 +695,9 @@ function buildPostLinkPreview(urlText: string): PostLinkPreview | null {
         href: parsed.href,
         domain: "x.com",
         title: "X post",
-        subtitle: parsed.href,
+        subtitle: displayUrlFromHref(parsed.href),
+        imageUrl: fallbackPreviewImage(parsed.href),
+        faviconUrl: fallbackPreviewImage(parsed.href),
         embedUrl: `https://twitframe.com/show?url=${encodeURIComponent(canonicalUrl)}`,
         embedKind: "x"
       };
@@ -431,7 +709,9 @@ function buildPostLinkPreview(urlText: string): PostLinkPreview | null {
         href: parsed.href,
         domain: "tiktok.com",
         title: "TikTok video",
-        subtitle: parsed.href,
+        subtitle: displayUrlFromHref(parsed.href),
+        imageUrl: fallbackPreviewImage(parsed.href),
+        faviconUrl: fallbackPreviewImage(parsed.href),
         embedUrl: `https://www.tiktok.com/embed/v2/${tiktokVideoId}`,
         embedKind: "tiktok"
       };
@@ -443,7 +723,9 @@ function buildPostLinkPreview(urlText: string): PostLinkPreview | null {
         href: parsed.href,
         domain: "instagram.com",
         title: "Instagram post",
-        subtitle: parsed.href,
+        subtitle: displayUrlFromHref(parsed.href),
+        imageUrl: fallbackPreviewImage(parsed.href),
+        faviconUrl: fallbackPreviewImage(parsed.href),
         embedUrl: `https://www.instagram.com/${instagramMedia.kind}/${instagramMedia.code}/embed/`,
         embedKind: "instagram"
       };
@@ -453,7 +735,9 @@ function buildPostLinkPreview(urlText: string): PostLinkPreview | null {
       href: parsed.href,
       domain,
       title: titleFromUrlPath(parsed),
-      subtitle: parsed.href
+      subtitle: defaultPreviewSubtitle(parsed),
+      imageUrl: fallbackPreviewImage(parsed.href),
+      faviconUrl: fallbackPreviewImage(parsed.href)
     };
   } catch {
     return null;
@@ -465,10 +749,15 @@ export function FeedCard({
   nativeLanguage,
   isSaved,
   onToggleSave,
+  onOpenPost,
+  forceCommentsOpen = false,
+  disableHeaderOpen = false,
+  isFullscreen = false,
   isSignedIn,
+  onSignInWithPasskey,
+  onCreatePasskeyOnDevice,
+  passkeySignInEnabled,
   viewerHandle,
-  isAuthorFollowed,
-  onToggleFollowAuthor,
   onOpenAuthorProfile,
   reactionState,
   isReposted,
@@ -479,9 +768,11 @@ export function FeedCard({
 }: FeedCardProps) {
   const cardRef = useRef<HTMLElement | null>(null);
   const [languageMode, setLanguageMode] = useState<PostLanguageMode>("native");
-  const [activeLeftAction, setActiveLeftAction] = useState<LeftActionState>(null);
+  const [activeLeftAction, setActiveLeftAction] = useState<LeftActionState>(forceCommentsOpen ? "comments" : null);
   const [commentInput, setCommentInput] = useState("");
   const [commentAuthModalMessage, setCommentAuthModalMessage] = useState<string | null>(null);
+  const [authModalTab, setAuthModalTab] = useState<"signin" | "signup">("signin");
+  const [signInBusyProvider, setSignInBusyProvider] = useState<"passkey" | null>(null);
   const [threadComments, setThreadComments] = useState<ThreadComment[]>([]);
   const [commentsLoading, setCommentsLoading] = useState(false);
   const [commentsLoadedPostId, setCommentsLoadedPostId] = useState<string | null>(null);
@@ -502,11 +793,12 @@ export function FeedCard({
   const neutralCount = post.neutralVotes + (reactionState === "neutral" ? 1 : 0);
   const downvoteCount = post.downvotes + (reactionState === "down" ? 1 : 0);
   const approvalPercent = approvalPercentFromVotes(upvoteCount, neutralCount, downvoteCount);
+  const wikipediaLocationUrl = wikipediaUrlForLocation(post);
+  const locationDisplayText = displayLocationText(post);
   const isAnonymousPost = post.isAnonymous === true;
   const visibleAuthor = isAnonymousPost ? "Anonymous" : post.author;
   const visibleHandle = isAnonymousPost ? "@anonymous" : post.handle;
   const canOpenAuthorProfile = !isAnonymousPost;
-  const canFollowAuthor = canOpenAuthorProfile && post.handle !== viewerHandle;
   const translatedCaption = post.translatedCaptions?.[nativeLanguage];
   const originalMatchesNative =
     nativeLanguage.trim().toLowerCase() === post.originalLanguage.trim().toLowerCase();
@@ -516,11 +808,16 @@ export function FeedCard({
     translatedCaption && !translatedMatchesOriginal && !originalMatchesNative
   );
   const effectiveLanguageMode: PostLanguageMode = hasTranslationForNative ? languageMode : "original";
-  const displayCaption =
-    effectiveLanguageMode === "native" ? translatedCaption ?? post.caption : post.caption;
+  const displayCaption = normalizeCaptionForDisplay(
+    effectiveLanguageMode === "native" ? translatedCaption ?? post.caption : post.caption
+  );
   const previewUrl = extractFirstUrl(displayCaption) ?? extractFirstUrl(post.caption);
-  const linkPreview = previewUrl ? buildPostLinkPreview(previewUrl) : null;
-  const visibleCaption = linkPreview ? removeUrlsFromCaption(displayCaption) : displayCaption;
+  const baseLinkPreview = useMemo(() => (previewUrl ? buildPostLinkPreview(previewUrl) : null), [previewUrl]);
+  const [linkPreview, setLinkPreview] = useState<PostLinkPreview | null>(baseLinkPreview);
+  const visibleCaption = normalizeCaptionForDisplay(
+    linkPreview ? removeUrlsFromCaption(displayCaption) : displayCaption
+  );
+  const linkPreviewUrlLabel = linkPreview ? displayUrlFromHref(linkPreview.href) : "";
   const postDeepLinkPath = `/?postId=${encodeURIComponent(post.id)}#post-${post.id}`;
   const shareUrl =
     typeof window === "undefined"
@@ -528,9 +825,36 @@ export function FeedCard({
       : new URL(postDeepLinkPath, window.location.origin).toString();
 
   useEffect(() => {
+    setLinkPreview(baseLinkPreview);
+  }, [baseLinkPreview?.href]);
+
+  useEffect(() => {
+    if (forceCommentsOpen) {
+      setActiveLeftAction("comments");
+    }
+  }, [forceCommentsOpen]);
+
+  useEffect(() => {
+    if (!baseLinkPreview) {
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const hydrated = await hydratePostLinkPreview(baseLinkPreview);
+      if (!cancelled) {
+        setLinkPreview(hydrated);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [baseLinkPreview?.href]);
+
+  useEffect(() => {
     if (!commentAuthModalMessage) {
       return;
     }
+    setAuthModalTab("signin");
 
     function closeWhenCardLeavesViewport() {
       const card = cardRef.current;
@@ -554,6 +878,30 @@ export function FeedCard({
       window.removeEventListener("resize", closeWhenCardLeavesViewport);
     };
   }, [commentAuthModalMessage]);
+
+  async function handleModalPasskeySignIn() {
+    if (signInBusyProvider || !passkeySignInEnabled) {
+      return;
+    }
+    setSignInBusyProvider("passkey");
+    const success = await onSignInWithPasskey();
+    setSignInBusyProvider(null);
+    if (success) {
+      setCommentAuthModalMessage(null);
+    }
+  }
+
+  async function handleModalCreatePasskeyOnDevice() {
+    if (signInBusyProvider || !passkeySignInEnabled) {
+      return;
+    }
+    setSignInBusyProvider("passkey");
+    const success = await onCreatePasskeyOnDevice();
+    setSignInBusyProvider(null);
+    if (success) {
+      setCommentAuthModalMessage(null);
+    }
+  }
 
   useEffect(() => {
     if (commentInputRef.current) {
@@ -808,6 +1156,10 @@ export function FeedCard({
     if (typeof window === "undefined") {
       return;
     }
+    if (onOpenPost) {
+      onOpenPost(post.id);
+      return;
+    }
     window.sessionStorage.setItem(SCROLL_TARGET_POST_KEY, post.id);
     window.history.replaceState({ postId: post.id }, "", postDeepLinkPath);
   }
@@ -868,7 +1220,7 @@ export function FeedCard({
   }
 
   function replyEffectiveLikes(reply: ThreadReply): number {
-    return reply.likes + (reply.reaction === "up" ? 1 : 0);
+    return reply.likes;
   }
 
   async function toggleReplyReaction(commentId: string, replyId: string, next: CommentReaction) {
@@ -950,19 +1302,27 @@ export function FeedCard({
   }
 
   return (
-    <article id={`post-${post.id}`} ref={cardRef} className="panel feed-card reveal">
+    <article
+      id={`post-${post.id}`}
+      ref={cardRef}
+      className={`panel feed-card ${isFullscreen ? "feed-card--fullscreen" : "reveal"}`}
+    >
       <header
-        className="feed-card__header feed-card__header--shareable"
-        role="link"
-        tabIndex={0}
-        aria-label="Open shareable post link"
-        onClick={openShareablePostLink}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" || event.key === " ") {
-            event.preventDefault();
-            openShareablePostLink();
-          }
-        }}
+        className={disableHeaderOpen ? "feed-card__header" : "feed-card__header feed-card__header--shareable"}
+        role={disableHeaderOpen ? undefined : "link"}
+        tabIndex={disableHeaderOpen ? undefined : 0}
+        aria-label={disableHeaderOpen ? undefined : "Open shareable post link"}
+        onClick={disableHeaderOpen ? undefined : openShareablePostLink}
+        onKeyDown={
+          disableHeaderOpen
+            ? undefined
+            : (event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  openShareablePostLink();
+                }
+              }
+        }
       >
         <div className="feed-card__author">
           {canOpenAuthorProfile ? (
@@ -992,18 +1352,6 @@ export function FeedCard({
           )}
         </div>
         <div className="feed-card__meta-actions">
-          {canFollowAuthor ? (
-            <button
-              type="button"
-              className={isAuthorFollowed ? "author-follow-chip is-following" : "author-follow-chip"}
-              onClick={(event) => {
-                event.stopPropagation();
-                onToggleFollowAuthor(post.handle);
-              }}
-            >
-              {isAuthorFollowed ? "Following" : "Follow"}
-            </button>
-          ) : null}
           <button
             type="button"
             className={shareStatusMessage ? "share-post-button is-shared" : "share-post-button"}
@@ -1052,25 +1400,43 @@ export function FeedCard({
       ) : null}
       {linkPreview ? (
         <a
-          className="feed-card__link-preview"
+          className={
+            linkPreview.embedKind === "youtube"
+              ? "feed-card__link-preview feed-card__link-preview--youtube"
+              : "feed-card__link-preview"
+          }
           href={linkPreview.href}
           target="_blank"
           rel="noreferrer noopener"
           aria-label={`Open link preview for ${linkPreview.domain}`}
         >
           <div className="feed-card__link-preview-media">
-            {linkPreview.imageUrl ? (
-              <img src={linkPreview.imageUrl} alt={linkPreview.title} loading="lazy" />
-            ) : (
-              <div className="feed-card__link-preview-fallback">
-                {linkPreview.domain.slice(0, 2).toUpperCase()}
-              </div>
-            )}
+            <img
+              src={linkPreview.imageUrl ?? fallbackPreviewImage(linkPreview.href)}
+              alt={linkPreview.title}
+              loading="lazy"
+            />
           </div>
           <div className="feed-card__link-preview-body">
-            <span className="feed-card__link-preview-domain">{linkPreview.domain}</span>
+            <div className="feed-card__link-preview-meta">
+              {linkPreview.faviconUrl ? (
+                <img
+                  className="feed-card__link-preview-favicon"
+                  src={linkPreview.faviconUrl}
+                  alt=""
+                  loading="lazy"
+                  aria-hidden="true"
+                />
+              ) : null}
+              <span className="feed-card__link-preview-domain">{linkPreview.siteName ?? linkPreview.domain}</span>
+            </div>
             <strong className="feed-card__link-preview-title">{linkPreview.title}</strong>
-            <span className="feed-card__link-preview-url">{linkPreview.subtitle}</span>
+            <span className="feed-card__link-preview-description">
+              {linkPreview.embedKind === "youtube" && linkPreview.authorName
+                ? `Channel: ${linkPreview.authorName}`
+                : linkPreview.subtitle}
+            </span>
+            <span className="feed-card__link-preview-url">{linkPreviewUrlLabel}</span>
           </div>
         </a>
       ) : null}
@@ -1152,13 +1518,13 @@ export function FeedCard({
 
         <div className="reaction-group">
           <button
-            className={`reaction-button reaction-button--heart ${reactionState === "up" ? "is-active" : ""}`}
+            className={`reaction-button reaction-button--up ${reactionState === "up" ? "is-active" : ""}`}
             type="button"
             onClick={() => toggleReaction("up")}
-            aria-label="Heart"
+            aria-label="Up"
           >
-            <span className="reaction-button__icon">♥</span>
-            <span className="reaction-button__label">Like</span>
+            <span className="reaction-button__icon">▲</span>
+            <span className="reaction-button__label">Up</span>
             <span className="reaction-button__count">{formatLikeCompact(upvoteCount)}</span>
           </button>
           <button
@@ -1175,10 +1541,10 @@ export function FeedCard({
             className={`reaction-button reaction-button--down ${reactionState === "down" ? "is-active" : ""}`}
             type="button"
             onClick={() => toggleReaction("down")}
-            aria-label="Dislike"
+            aria-label="Down"
           >
             <span className="reaction-button__icon">▼</span>
-            <span className="reaction-button__label">Dislike</span>
+            <span className="reaction-button__label">Down</span>
             <span className="reaction-button__count">{formatLikeCompact(downvoteCount)}</span>
           </button>
         </div>
@@ -1247,7 +1613,7 @@ export function FeedCard({
                         onClick={() => void toggleCommentReaction(comment.id, "up")}
                       >
                         <ThumbUpIcon />
-                        <span>{formatCompact(comment.likes + (comment.reaction === "up" ? 1 : 0))}</span>
+                        <span>{formatCompact(comment.likes)}</span>
                       </button>
                       <button
                         className={`yt-comment-action ${comment.reaction === "down" ? "is-active" : ""}`}
@@ -1255,7 +1621,7 @@ export function FeedCard({
                         onClick={() => void toggleCommentReaction(comment.id, "down")}
                       >
                         <ThumbDownIcon />
-                        <span>{formatCompact(comment.dislikes + (comment.reaction === "down" ? 1 : 0))}</span>
+                        <span>{formatCompact(comment.dislikes)}</span>
                       </button>
                       <button
                         className="yt-comment-action yt-comment-action--text"
@@ -1314,7 +1680,7 @@ export function FeedCard({
                                       onClick={() => void toggleReplyReaction(comment.id, reply.id, "up")}
                                     >
                                       <ThumbUpIcon />
-                                      <span>{formatCompact(reply.likes + (reply.reaction === "up" ? 1 : 0))}</span>
+                                      <span>{formatCompact(reply.likes)}</span>
                                     </button>
                                     <button
                                       className={`yt-comment-action ${reply.reaction === "down" ? "is-active" : ""}`}
@@ -1322,7 +1688,7 @@ export function FeedCard({
                                       onClick={() => void toggleReplyReaction(comment.id, reply.id, "down")}
                                     >
                                       <ThumbDownIcon />
-                                      <span>{formatCompact(reply.dislikes + (reply.reaction === "down" ? 1 : 0))}</span>
+                                      <span>{formatCompact(reply.dislikes)}</span>
                                     </button>
                                   </div>
                                 </div>
@@ -1355,7 +1721,57 @@ export function FeedCard({
           >
             <h4>Sign in required</h4>
             <p>{commentAuthModalMessage}</p>
+            <div className="auth-modal__tabs" role="tablist" aria-label="Authentication mode">
+              <button
+                type="button"
+                className={authModalTab === "signin" ? "auth-modal__tab is-active" : "auth-modal__tab"}
+                onClick={() => setAuthModalTab("signin")}
+                role="tab"
+                aria-selected={authModalTab === "signin"}
+              >
+                Sign in
+              </button>
+              <button
+                type="button"
+                className={authModalTab === "signup" ? "auth-modal__tab is-active" : "auth-modal__tab"}
+                onClick={() => setAuthModalTab("signup")}
+                role="tab"
+                aria-selected={authModalTab === "signup"}
+              >
+                Sign up
+              </button>
+            </div>
+            <p className="auth-modal__note">
+              Phone QR sign-in is recommended from the top-right Guest/User menu. This modal supports on-device passkey sign-in.
+            </p>
             <div className="auth-modal__actions">
+              {authModalTab === "signin" ? (
+                <button
+                  type="button"
+                  className="yt-button-secondary"
+                  onClick={() => void handleModalPasskeySignIn()}
+                  disabled={!passkeySignInEnabled || signInBusyProvider !== null}
+                >
+                  {signInBusyProvider === "passkey"
+                    ? "Checking device..."
+                    : passkeySignInEnabled
+                      ? "Sign in on this device"
+                      : "Passkey unavailable"}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="yt-button-secondary"
+                  onClick={() => void handleModalCreatePasskeyOnDevice()}
+                  disabled={!passkeySignInEnabled || signInBusyProvider !== null}
+                >
+                  {signInBusyProvider === "passkey"
+                    ? "Setting up..."
+                    : passkeySignInEnabled
+                      ? "Create passkey on this device"
+                      : "Passkey unavailable"}
+                </button>
+              )}
               <button
                 type="button"
                 className="yt-button-primary"
@@ -1369,10 +1785,24 @@ export function FeedCard({
       ) : null}
 
       <footer className="feed-card__footer">
-        <span className="country-with-flag">
-          <span>{post.countryName}</span>
-          <span aria-hidden="true">{countryFlagFromIso2(post.countryCode)}</span>
-        </span>
+        {wikipediaLocationUrl ? (
+          <a
+            className="country-with-flag country-with-flag--link"
+            href={wikipediaLocationUrl}
+            target="_blank"
+            rel="noreferrer noopener"
+            aria-label={`Learn more about ${locationDisplayText} on Wikipedia`}
+            title={`Learn more about ${locationDisplayText}`}
+          >
+            <span>{locationDisplayText}</span>
+            <span aria-hidden="true">{countryFlagFromIso2(post.countryCode)}</span>
+          </a>
+        ) : (
+          <span className="country-with-flag">
+            <span>{locationDisplayText}</span>
+            <span aria-hidden="true">{countryFlagFromIso2(post.countryCode)}</span>
+          </span>
+        )}
         <span className="controversy-indicator">{approvalPercent.toFixed(3)}% approval</span>
       </footer>
     </article>

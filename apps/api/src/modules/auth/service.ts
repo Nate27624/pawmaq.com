@@ -15,6 +15,7 @@ export type AuthSessionStoreMode = "auto" | "memory" | "redis";
 export interface AuthSessionIdentity {
   provider: ProfileProvider;
   subject: string;
+  guest?: boolean;
 }
 
 interface AuthSessionRecord extends AuthSessionIdentity {
@@ -95,21 +96,26 @@ export class AuthSessionService {
     return Math.max(60, Math.floor(this.sessionTtlMs / 1000));
   }
 
-  async createSession(identity: AuthSessionIdentity): Promise<string> {
+  async createSession(identity: AuthSessionIdentity, ttlMsOverride?: number): Promise<string> {
     this.purgeExpiredMemorySessions();
     const nowMs = Date.now();
     const sessionId = randomBytes(32).toString("base64url");
+    const ttlMs =
+      ttlMsOverride && Number.isFinite(ttlMsOverride) && ttlMsOverride > 0
+        ? Math.floor(ttlMsOverride)
+        : this.sessionTtlMs;
     const record: AuthSessionRecord = {
       sessionId,
       provider: identity.provider,
       subject: identity.subject,
+      guest: identity.guest === true,
       createdAtMs: nowMs,
-      expiresAtMs: nowMs + this.sessionTtlMs
+      expiresAtMs: nowMs + ttlMs
     };
 
     if (this.redisClient) {
       await this.redisClient.set(this.redisSessionKey(sessionId), JSON.stringify(record), {
-        EX: this.getSessionMaxAgeSeconds()
+        EX: Math.max(60, Math.floor(ttlMs / 1000))
       });
       return sessionId;
     }
@@ -139,7 +145,8 @@ export class AuthSessionService {
       }
       return {
         provider: parsed.provider,
-        subject: parsed.subject
+        subject: parsed.subject,
+        guest: parsed.guest === true
       };
     }
 
@@ -153,7 +160,8 @@ export class AuthSessionService {
     }
     return {
       provider: record.provider,
-      subject: record.subject
+      subject: record.subject,
+      guest: record.guest === true
     };
   }
 
@@ -304,13 +312,14 @@ export class AuthSessionService {
     ) {
       return null;
     }
-    if (candidate.provider !== "google") {
+    if (candidate.provider !== "google" && candidate.provider !== "passkey") {
       return null;
     }
     return {
       sessionId: candidate.sessionId,
-      provider: "google",
+      provider: candidate.provider,
       subject: candidate.subject,
+      guest: candidate.guest === true,
       createdAtMs: candidate.createdAtMs,
       expiresAtMs: candidate.expiresAtMs
     };

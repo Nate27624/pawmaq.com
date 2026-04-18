@@ -30,6 +30,13 @@ export function SideNav({
       <p className="brand-subtitle">Watch what people are posting right now.</p>
       <nav className="tab-list" aria-label="Feed tabs">
         <button
+          className={activeTab === "world" ? "tab-button active" : "tab-button"}
+          onClick={() => onTabChange("world")}
+          type="button"
+        >
+          World
+        </button>
+        <button
           className={activeTab === "following" ? "tab-button active" : "tab-button"}
           onClick={() => onTabChange("following")}
           type="button"
@@ -37,11 +44,11 @@ export function SideNav({
           Following
         </button>
         <button
-          className={activeTab === "world" ? "tab-button active" : "tab-button"}
-          onClick={() => onTabChange("world")}
+          className={activeTab === "saved" ? "tab-button active" : "tab-button"}
+          onClick={() => onTabChange("saved")}
           type="button"
         >
-          World
+          Saved
         </button>
       </nav>
     </aside>

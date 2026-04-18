@@ -3,6 +3,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import type {
   ProfileLedger,
+  ProfileLinkedAuthIdentity,
   ProfilePrivateCryptoBundle,
   ProfileDailyQuotaRecord,
   ProfilePrivateEncryptedBlock,
@@ -49,6 +50,11 @@ function fallbackUsernameFromName(name: string): string {
   return normalized.length >= 2 ? normalized : "member";
 }
 
+function formatAnonymousAlias(sequence: number): string {
+  const safe = Number.isFinite(sequence) ? Math.max(1, Math.floor(sequence)) : 1;
+  return `Anonymous${safe.toString().padStart(6, "0")}`;
+}
+
 function dedupeAndSort(values: string[]): string[] {
   return [...new Set(values)].sort((left, right) => left.localeCompare(right));
 }
@@ -81,7 +87,27 @@ function avatarFallback(name: string): string {
     .slice(0, 2)
     .map((part) => part.slice(0, 1).toUpperCase())
     .join("");
-  return `https://ui-avatars.com/api/?name=${encodeURIComponent(initials || "U")}&background=1f2937&color=ffffff`;
+  const safeInitials = (initials || "U").replace(/[^A-Z0-9]/g, "").slice(0, 2) || "U";
+  const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='256' height='256' viewBox='0 0 256 256'><rect width='256' height='256' fill='#1f2937'/><text x='50%' y='53%' dominant-baseline='middle' text-anchor='middle' font-family='Arial,sans-serif' font-size='96' font-weight='700' fill='#ffffff'>${safeInitials}</text></svg>`;
+  return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+}
+
+function isGoogleAccountAvatarUrl(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return false;
+  }
+  try {
+    const parsed = new URL(trimmed);
+    const hostname = parsed.hostname.toLowerCase();
+    return (
+      hostname.includes("googleusercontent.com") ||
+      hostname.includes("ggpht.com") ||
+      hostname.includes("google.com")
+    );
+  } catch {
+    return false;
+  }
 }
 
 function bannerFallback(seed: string): string {
@@ -136,6 +162,60 @@ function hashProviderSubject(provider: ProfileProvider, subject: string): string
     .digest("hex");
 }
 
+function authIdentityKey(provider: ProfileProvider, providerSubjectHash: string): string {
+  return `${provider}:${providerSubjectHash}`;
+}
+
+function normalizeAccountId(value: string): string {
+  return value.trim().toLowerCase().replace(/[^a-z0-9_-]/g, "").slice(0, 80);
+}
+
+function normalizeLinkedAuthIdentities(
+  raw: unknown,
+  fallbackProvider: ProfileProvider,
+  fallbackProviderSubjectHash: string
+): ProfileLinkedAuthIdentity[] {
+  const fallbackIdentity: ProfileLinkedAuthIdentity = {
+    provider: fallbackProvider,
+    provider_subject_hash: fallbackProviderSubjectHash,
+    linked_at: new Date().toISOString()
+  };
+  if (!Array.isArray(raw)) {
+    return [fallbackIdentity];
+  }
+  const deduped = new Map<string, ProfileLinkedAuthIdentity>();
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
+    const candidate = entry as Partial<ProfileLinkedAuthIdentity>;
+    const provider: ProfileProvider =
+      candidate.provider === "bot" ? "bot" : candidate.provider === "passkey" ? "passkey" : "google";
+    const providerSubjectHash =
+      typeof candidate.provider_subject_hash === "string" ? candidate.provider_subject_hash.trim().toLowerCase() : "";
+    if (!providerSubjectHash) {
+      continue;
+    }
+    const key = authIdentityKey(provider, providerSubjectHash);
+    if (deduped.has(key)) {
+      continue;
+    }
+    deduped.set(key, {
+      provider,
+      provider_subject_hash: providerSubjectHash,
+      linked_at:
+        typeof candidate.linked_at === "string" && candidate.linked_at.trim().length > 0
+          ? candidate.linked_at
+          : new Date().toISOString()
+    });
+  }
+  const fallbackKey = authIdentityKey(fallbackProvider, fallbackProviderSubjectHash);
+  if (!deduped.has(fallbackKey)) {
+    deduped.set(fallbackKey, fallbackIdentity);
+  }
+  return [...deduped.values()];
+}
+
 function normalizePrivateEncryptedBlock(raw: unknown): ProfilePrivateEncryptedBlock | undefined {
   if (!raw || typeof raw !== "object") {
     return undefined;
@@ -188,7 +268,9 @@ function normalizePrivateCryptoBundle(raw: unknown): ProfilePrivateCryptoBundle 
 function toPublicProfile(record: ProfileLedgerUserRecord): PublicProfile {
   return {
     userId: record.user_id,
+    accountId: record.account_id,
     provider: record.provider,
+    linkedAuthProviders: [...new Set(record.linked_auth_identities.map((identity) => identity.provider))],
     name: record.name,
     username: record.username,
     handle: record.usertag,
@@ -253,11 +335,15 @@ export class ProfileLedgerService {
       if (existing) {
         const nowIso = new Date().toISOString();
         this.applyDailyLedgerQuota(ledger, existing.user_id, bytesFromJson(input), nowIso);
-        existing.name = input.name.trim().slice(0, 120) || existing.name;
+        this.upsertLinkedIdentity(ledger, existing, input.provider, hashProviderSubject(input.provider, input.subject), nowIso);
+        const incomingName = input.name.trim().slice(0, 120);
+        if (!existing.name.trim() || existing.name.trim().toLowerCase() === "member") {
+          existing.name = incomingName || existing.name;
+        }
         existing.posts = normalizePostIds(existing.posts);
         existing.post_interaction_history = normalizePostInteractionHistory(existing.post_interaction_history);
-        if (!existing.avatar_url && input.picture) {
-          existing.avatar_url = input.picture;
+        if (!existing.avatar_url || isGoogleAccountAvatarUrl(existing.avatar_url)) {
+          existing.avatar_url = avatarFallback(existing.name);
         }
         existing.updated_at = nowIso;
         return toPublicProfile(existing);
@@ -265,22 +351,33 @@ export class ProfileLedgerService {
 
       const nowIso = new Date().toISOString();
       const userId = this.generateUniqueUserId(ledger);
+      const accountId = this.generateUniqueAccountId(ledger);
       this.applyDailyLedgerQuota(ledger, userId, bytesFromJson(input), nowIso);
-      const baseUsername = fallbackUsernameFromName(input.name);
-      const username = this.ensureUniqueUsername(ledger, baseUsername, userId);
+      ledger.anonymous_user_sequence = Math.max(0, Math.floor(ledger.anonymous_user_sequence)) + 1;
+      const anonymousAlias = formatAnonymousAlias(ledger.anonymous_user_sequence);
+      const username = this.ensureUniqueUsername(ledger, anonymousAlias, userId);
       const handle = this.ensureUniqueHandle(ledger, `@${username}`, userId);
+      const providerSubjectHash = hashProviderSubject(input.provider, input.subject);
 
       const record: ProfileLedgerUserRecord = {
         user_id: userId,
+        account_id: accountId,
         provider: input.provider,
-        provider_subject_hash: hashProviderSubject(input.provider, input.subject),
+        provider_subject_hash: providerSubjectHash,
+        linked_auth_identities: [
+          {
+            provider: input.provider,
+            provider_subject_hash: providerSubjectHash,
+            linked_at: nowIso
+          }
+        ],
         username,
         username_normalized: normalizeUsername(username),
         usertag: handle,
-        name: input.name.trim().slice(0, 120) || "Member",
+        name: anonymousAlias,
         bio: "",
         location: "",
-        avatar_url: input.picture?.trim() || avatarFallback(input.name),
+        avatar_url: avatarFallback(anonymousAlias),
         banner_url: bannerFallback(`${input.provider}:${hashProviderSubject(input.provider, input.subject)}`),
         share_social_graph: true,
         following_handles: [],
@@ -292,9 +389,48 @@ export class ProfileLedgerService {
       };
 
       ledger.users[userId] = record;
+      ledger.account_index[accountId] = userId;
+      ledger.auth_identity_index[authIdentityKey(input.provider, providerSubjectHash)] = userId;
       ledger.username_index[record.username_normalized] = userId;
       ledger.usertag_index[record.usertag] = userId;
       return toPublicProfile(record);
+    });
+  }
+
+  async linkProviderSubjectToAccount(input: {
+    accountProvider: ProfileProvider;
+    accountSubject: string;
+    identityProvider: ProfileProvider;
+    identitySubject: string;
+  }): Promise<PublicProfile> {
+    return this.mutateLedger((ledger) => {
+      const nowIso = new Date().toISOString();
+      const accountRecord = this.findByProviderSubjectRawIdentity(
+        ledger,
+        input.accountProvider,
+        input.accountSubject
+      );
+      if (!accountRecord) {
+        throw new Error("Account profile not found for signed-in user.");
+      }
+      const identityHash = hashProviderSubject(input.identityProvider, input.identitySubject);
+      const linkedIdentityRecord = this.findByProviderSubjectRawIdentity(
+        ledger,
+        input.identityProvider,
+        input.identitySubject
+      );
+
+      let primary = this.resolvePrimaryAccountRecord(ledger, accountRecord.account_id) ?? accountRecord;
+      if (linkedIdentityRecord && linkedIdentityRecord.user_id !== primary.user_id) {
+        const linkedPrimary = this.resolvePrimaryAccountRecord(ledger, linkedIdentityRecord.account_id) ?? linkedIdentityRecord;
+        if (linkedPrimary.account_id !== primary.account_id) {
+          primary = this.mergeAccountIntoAccount(ledger, primary.account_id, linkedPrimary.account_id, nowIso);
+        }
+      }
+
+      this.upsertLinkedIdentity(ledger, primary, input.identityProvider, identityHash, nowIso);
+      primary.updated_at = nowIso;
+      return toPublicProfile(primary);
     });
   }
 
@@ -309,8 +445,10 @@ export class ProfileLedgerService {
       if (existingUserId) {
         const existing = ledger.users[existingUserId];
         if (existing) {
+          const nowHash = hashProviderSubject("bot", botSubject);
           existing.provider = "bot";
-          existing.provider_subject_hash = hashProviderSubject("bot", botSubject);
+          existing.provider_subject_hash = nowHash;
+          this.upsertLinkedIdentity(ledger, existing, "bot", nowHash, nowIso);
           existing.name = fallbackName;
           if (typeof input.bio === "string") {
             existing.bio = input.bio.trim().slice(0, 300);
@@ -332,13 +470,23 @@ export class ProfileLedgerService {
       }
 
       const userId = this.generateUniqueUserId(ledger);
+      const accountId = this.generateUniqueAccountId(ledger);
+      const providerSubjectHash = hashProviderSubject("bot", botSubject);
       const baseUsername = normalizeUsername(input.username ?? normalizedHandle.replace(/^@/, "")) || "rssbot";
       const username = this.ensureUniqueUsername(ledger, baseUsername, userId);
       const handle = this.ensureUniqueHandle(ledger, normalizedHandle, userId);
       const record: ProfileLedgerUserRecord = {
         user_id: userId,
+        account_id: accountId,
         provider: "bot",
-        provider_subject_hash: hashProviderSubject("bot", botSubject),
+        provider_subject_hash: providerSubjectHash,
+        linked_auth_identities: [
+          {
+            provider: "bot",
+            provider_subject_hash: providerSubjectHash,
+            linked_at: nowIso
+          }
+        ],
         username,
         username_normalized: normalizeUsername(username),
         usertag: handle,
@@ -362,6 +510,8 @@ export class ProfileLedgerService {
         updated_at: nowIso
       };
       ledger.users[userId] = record;
+      ledger.account_index[accountId] = userId;
+      ledger.auth_identity_index[authIdentityKey("bot", providerSubjectHash)] = userId;
       ledger.username_index[record.username_normalized] = userId;
       ledger.usertag_index[record.usertag] = userId;
       return toPublicProfile(record);
@@ -683,6 +833,8 @@ export class ProfileLedgerService {
       const rawUsers = parsed.users as Record<string, ProfileLedgerUserRecord & {
         provider_subject?: string;
         email?: string;
+        account_id?: string;
+        linked_auth_identities?: unknown;
       }>;
       const users: Record<string, ProfileLedgerUserRecord> = {};
       const remappedUserIds = new Map<string, string>();
@@ -691,7 +843,8 @@ export class ProfileLedgerService {
         if (!source || typeof source !== "object") {
           continue;
         }
-        const provider: ProfileProvider = source.provider === "bot" ? "bot" : "google";
+        const provider: ProfileProvider =
+          source.provider === "bot" ? "bot" : source.provider === "passkey" ? "passkey" : "google";
         const legacySubject = typeof source.provider_subject === "string" ? source.provider_subject.trim() : "";
         const subjectHashRaw =
           typeof source.provider_subject_hash === "string" ? source.provider_subject_hash.trim().toLowerCase() : "";
@@ -741,20 +894,47 @@ export class ProfileLedgerService {
           shouldPersistSanitizedLedger = true;
         }
 
+        const rawAvatar =
+          typeof source.avatar_url === "string" && source.avatar_url.trim().length > 0
+            ? source.avatar_url.trim()
+            : "";
+        const avatarUrl = rawAvatar && !isGoogleAccountAvatarUrl(rawAvatar) ? rawAvatar : avatarFallback(safeName);
+        if (avatarUrl !== rawAvatar) {
+          shouldPersistSanitizedLedger = true;
+        }
+
+        const accountIdSeed =
+          typeof source.account_id === "string" && source.account_id.trim().length > 0
+            ? source.account_id
+            : `acct_${providerSubjectHash.slice(0, 24)}`;
+        let accountId = normalizeAccountId(accountIdSeed);
+        if (!accountId) {
+          accountId = this.generateUniqueAccountId({ account_index: {} } as ProfileLedger);
+          shouldPersistSanitizedLedger = true;
+        }
+
+        const linkedAuthIdentities = normalizeLinkedAuthIdentities(
+          source.linked_auth_identities,
+          provider,
+          providerSubjectHash
+        );
+        if (!Array.isArray(source.linked_auth_identities)) {
+          shouldPersistSanitizedLedger = true;
+        }
+
         users[userId] = {
           user_id: userId,
+          account_id: accountId,
           provider,
           provider_subject_hash: providerSubjectHash,
+          linked_auth_identities: linkedAuthIdentities,
           username: normalizedUsername,
           username_normalized: normalizedUsername,
           usertag: normalizedHandle,
           name: safeName,
           bio: typeof source.bio === "string" ? source.bio.trim().slice(0, 300) : "",
           location: typeof source.location === "string" ? source.location.trim().slice(0, 120) : "",
-          avatar_url:
-            typeof source.avatar_url === "string" && source.avatar_url.trim().length > 0
-              ? source.avatar_url.trim()
-              : avatarFallback(safeName),
+          avatar_url: avatarUrl,
           banner_url:
             typeof source.banner_url === "string" && source.banner_url.trim().length > 0
               ? source.banner_url.trim()
@@ -788,13 +968,31 @@ export class ProfileLedgerService {
       const normalized: ProfileLedger = {
         ledger_version: parsed.ledger_version,
         generated_at: parsed.generated_at,
+        anonymous_user_sequence: 0,
         users,
+        account_index: {},
+        auth_identity_index: {},
         username_index: {},
         usertag_index: {},
         daily_ledger_quota_by_user: {}
       };
 
+      const rawAnonymousSequence = (parsed as Partial<ProfileLedger>).anonymous_user_sequence;
+      const parsedAnonymousSequence =
+        typeof rawAnonymousSequence === "number" && Number.isFinite(rawAnonymousSequence)
+          ? Math.max(0, Math.floor(rawAnonymousSequence))
+          : 0;
+      const existingHumanUserCount = Object.values(normalized.users).filter((user) => user.provider !== "bot").length;
+      normalized.anonymous_user_sequence = Math.max(parsedAnonymousSequence, existingHumanUserCount);
+
       for (const record of Object.values(normalized.users)) {
+        if (!record.account_id || normalizeAccountId(record.account_id) !== record.account_id) {
+          record.account_id = normalizeAccountId(record.account_id) || this.generateUniqueAccountId(normalized);
+          shouldPersistSanitizedLedger = true;
+        }
+        if (!normalized.account_index[record.account_id]) {
+          normalized.account_index[record.account_id] = record.user_id;
+        }
         const username = this.ensureUniqueUsername(normalized, record.username, record.user_id);
         record.username = username;
         record.username_normalized = normalizeUsername(username);
@@ -802,6 +1000,19 @@ export class ProfileLedgerService {
         const handle = this.ensureUniqueHandle(normalized, record.usertag, record.user_id);
         record.usertag = handle;
         normalized.usertag_index[handle] = record.user_id;
+        record.linked_auth_identities = normalizeLinkedAuthIdentities(
+          record.linked_auth_identities,
+          record.provider,
+          record.provider_subject_hash
+        );
+        for (const identity of record.linked_auth_identities) {
+          const identityKey = authIdentityKey(identity.provider, identity.provider_subject_hash);
+          if (!normalized.auth_identity_index[identityKey]) {
+            normalized.auth_identity_index[identityKey] = record.user_id;
+          } else if (normalized.auth_identity_index[identityKey] !== record.user_id) {
+            shouldPersistSanitizedLedger = true;
+          }
+        }
       }
 
       if (typeof parsed.daily_ledger_quota_by_user === "object" && parsed.daily_ledger_quota_by_user) {
@@ -840,7 +1051,10 @@ export class ProfileLedgerService {
       const initial: ProfileLedger = {
         ledger_version: "v1.0",
         generated_at: new Date().toISOString(),
+        anonymous_user_sequence: 0,
         users: {},
+        account_index: {},
+        auth_identity_index: {},
         username_index: {},
         usertag_index: {},
         daily_ledger_quota_by_user: {}
@@ -905,14 +1119,60 @@ export class ProfileLedgerService {
     };
   }
 
-  private findByProviderSubject(
+  private resolvePrimaryAccountRecord(ledger: ProfileLedger, accountIdRaw: string): ProfileLedgerUserRecord | null {
+    const accountId = normalizeAccountId(accountIdRaw);
+    if (!accountId) {
+      return null;
+    }
+    const indexedUserId = ledger.account_index[accountId];
+    if (indexedUserId && ledger.users[indexedUserId]) {
+      return ledger.users[indexedUserId] ?? null;
+    }
+    for (const record of Object.values(ledger.users)) {
+      if (record.account_id === accountId) {
+        ledger.account_index[accountId] = record.user_id;
+        return record;
+      }
+    }
+    return null;
+  }
+
+  private findByProviderSubjectRawIdentity(
     ledger: ProfileLedger,
     provider: ProfileProvider,
     subject: string
   ): ProfileLedgerUserRecord | null {
     const subjectHash = hashProviderSubject(provider, subject);
+    const indexedUserId = ledger.auth_identity_index[authIdentityKey(provider, subjectHash)];
+    if (indexedUserId && ledger.users[indexedUserId]) {
+      return ledger.users[indexedUserId] ?? null;
+    }
     const entries = Object.values(ledger.users);
-    return entries.find((user) => user.provider === provider && user.provider_subject_hash === subjectHash) ?? null;
+    for (const user of entries) {
+      if (user.provider === provider && user.provider_subject_hash === subjectHash) {
+        return user;
+      }
+      if (
+        user.linked_auth_identities.some(
+          (identity) => identity.provider === provider && identity.provider_subject_hash === subjectHash
+        )
+      ) {
+        return user;
+      }
+    }
+    return null;
+  }
+
+  private findByProviderSubject(
+    ledger: ProfileLedger,
+    provider: ProfileProvider,
+    subject: string
+  ): ProfileLedgerUserRecord | null {
+    const exact = this.findByProviderSubjectRawIdentity(ledger, provider, subject);
+    if (!exact) {
+      return null;
+    }
+    return this.resolvePrimaryAccountRecord(ledger, exact.account_id) ?? exact;
   }
 
   private generateUniqueUserId(ledger: ProfileLedger): string {
@@ -921,6 +1181,132 @@ export class ProfileLedgerService {
       userId = `u_${randomBytes(12).toString("hex")}`;
     } while (ledger.users[userId]);
     return userId;
+  }
+
+  private generateUniqueAccountId(ledger: ProfileLedger): string {
+    let accountId = "";
+    do {
+      accountId = `acct_${randomBytes(12).toString("hex")}`;
+    } while (ledger.account_index[accountId]);
+    return accountId;
+  }
+
+  private upsertLinkedIdentity(
+    ledger: ProfileLedger,
+    record: ProfileLedgerUserRecord,
+    provider: ProfileProvider,
+    providerSubjectHash: string,
+    linkedAtIso: string
+  ): void {
+    const identityKey = authIdentityKey(provider, providerSubjectHash);
+    const existing = record.linked_auth_identities.find(
+      (identity) => identity.provider === provider && identity.provider_subject_hash === providerSubjectHash
+    );
+    if (!existing) {
+      record.linked_auth_identities = [
+        ...record.linked_auth_identities,
+        {
+          provider,
+          provider_subject_hash: providerSubjectHash,
+          linked_at: linkedAtIso
+        }
+      ];
+    }
+    ledger.auth_identity_index[identityKey] = record.user_id;
+  }
+
+  private mergeAccountIntoAccount(
+    ledger: ProfileLedger,
+    targetAccountIdRaw: string,
+    sourceAccountIdRaw: string,
+    nowIso: string
+  ): ProfileLedgerUserRecord {
+    const targetAccountId = normalizeAccountId(targetAccountIdRaw);
+    const sourceAccountId = normalizeAccountId(sourceAccountIdRaw);
+    const targetPrimary = this.resolvePrimaryAccountRecord(ledger, targetAccountId);
+    if (!targetPrimary) {
+      throw new Error("Target account not found.");
+    }
+    if (!sourceAccountId || targetAccountId === sourceAccountId) {
+      return targetPrimary;
+    }
+
+    const sourceUsers = Object.values(ledger.users).filter((record) => record.account_id === sourceAccountId);
+    for (const source of sourceUsers) {
+      if (source.user_id === targetPrimary.user_id) {
+        continue;
+      }
+      targetPrimary.following_handles = dedupeAndSort([...targetPrimary.following_handles, ...source.following_handles]);
+      targetPrimary.follower_handles = dedupeAndSort([...targetPrimary.follower_handles, ...source.follower_handles]);
+      targetPrimary.posts = normalizePostIds([...targetPrimary.posts, ...source.posts]).slice(0, 50000);
+
+      const targetHistory = normalizePostInteractionHistory(targetPrimary.post_interaction_history);
+      const sourceHistory = normalizePostInteractionHistory(source.post_interaction_history);
+      targetPrimary.post_interaction_history = {
+        seen_post_ids: dedupeAndSort([...targetHistory.seen_post_ids, ...sourceHistory.seen_post_ids]),
+        liked_post_ids: dedupeAndSort([...targetHistory.liked_post_ids, ...sourceHistory.liked_post_ids]),
+        disliked_post_ids: dedupeAndSort([...targetHistory.disliked_post_ids, ...sourceHistory.disliked_post_ids]),
+        neutral_post_ids: dedupeAndSort([...targetHistory.neutral_post_ids, ...sourceHistory.neutral_post_ids]),
+        saved_post_ids: dedupeAndSort([...targetHistory.saved_post_ids, ...sourceHistory.saved_post_ids]),
+        reposted_post_ids: dedupeAndSort([...targetHistory.reposted_post_ids, ...sourceHistory.reposted_post_ids]),
+        commented_post_ids: dedupeAndSort([...targetHistory.commented_post_ids, ...sourceHistory.commented_post_ids])
+      };
+
+      if (!targetPrimary.bio && source.bio) {
+        targetPrimary.bio = source.bio;
+      }
+      if (!targetPrimary.location && source.location) {
+        targetPrimary.location = source.location;
+      }
+      if (!targetPrimary.private_profile_encrypted && source.private_profile_encrypted) {
+        targetPrimary.private_profile_encrypted = source.private_profile_encrypted;
+      }
+      if (!targetPrimary.private_crypto_bundle && source.private_crypto_bundle) {
+        targetPrimary.private_crypto_bundle = source.private_crypto_bundle;
+      }
+      if (!targetPrimary.share_social_graph && source.share_social_graph) {
+        targetPrimary.share_social_graph = true;
+      }
+      if (!targetPrimary.avatar_url && source.avatar_url) {
+        targetPrimary.avatar_url = source.avatar_url;
+      }
+      if (!targetPrimary.banner_url && source.banner_url) {
+        targetPrimary.banner_url = source.banner_url;
+      }
+      targetPrimary.created_at =
+        new Date(targetPrimary.created_at).getTime() <= new Date(source.created_at).getTime()
+          ? targetPrimary.created_at
+          : source.created_at;
+
+      for (const identity of source.linked_auth_identities) {
+        this.upsertLinkedIdentity(
+          ledger,
+          targetPrimary,
+          identity.provider,
+          identity.provider_subject_hash,
+          identity.linked_at || nowIso
+        );
+      }
+      this.upsertLinkedIdentity(ledger, targetPrimary, source.provider, source.provider_subject_hash, source.created_at);
+
+      if (source.usertag !== targetPrimary.usertag) {
+        this.replaceHandleReferencesAcrossLedger(ledger, source.usertag, targetPrimary.usertag);
+      }
+      delete ledger.username_index[source.username_normalized];
+      delete ledger.usertag_index[source.usertag];
+      delete ledger.users[source.user_id];
+    }
+
+    for (const [identityKey, userId] of Object.entries(ledger.auth_identity_index)) {
+      if (!ledger.users[userId]) {
+        delete ledger.auth_identity_index[identityKey];
+      }
+    }
+    delete ledger.account_index[sourceAccountId];
+    ledger.account_index[targetAccountId] = targetPrimary.user_id;
+    targetPrimary.account_id = targetAccountId;
+    targetPrimary.updated_at = nowIso;
+    return targetPrimary;
   }
 
   private ensureUniqueUsername(ledger: ProfileLedger, requested: string, currentUserId: string): string {

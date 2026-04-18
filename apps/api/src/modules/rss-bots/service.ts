@@ -55,8 +55,14 @@ function decodeXmlEntities(raw: string): string {
     .replace(/&amp;/g, "&")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
+    .replace(/&apos;/g, "'")
     .replace(/&quot;/g, "\"")
     .replace(/&#39;/g, "'")
+    .replace(/&rsquo;/g, "'")
+    .replace(/&lsquo;/g, "'")
+    .replace(/&rdquo;/g, "\"")
+    .replace(/&ldquo;/g, "\"")
+    .replace(/&nbsp;/g, " ")
     .replace(/&#x([0-9a-fA-F]+);/g, (_match, hex: string) => String.fromCodePoint(Number.parseInt(hex, 16)))
     .replace(/&#([0-9]+);/g, (_match, dec: string) => String.fromCodePoint(Number.parseInt(dec, 10)));
 }
@@ -69,23 +75,63 @@ function stripHtmlToText(raw: string): string {
     .replace(/<\/\s*li\s*>/gi, "\n");
   const withoutTags = withBreaks.replace(/<[^>]+>/g, " ");
   const decoded = decodeXmlEntities(withoutTags);
-  return decoded.replace(/\r\n/g, "\n").replace(/\n{3,}/g, "\n\n").replace(/[ \t]{2,}/g, " ").trim();
+  return decoded
+    .replace(/[\u00A0\u2007\u202F]/g, " ")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/[ \t\u00A0\u2007\u202F]*\n[ \t\u00A0\u2007\u202F]*/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/[ \t\u00A0\u2007\u202F]{2,}/g, " ")
+    .replace(/\s+([,.;!?])/g, "$1")
+    .replace(/([([{])\s+/g, "$1")
+    .replace(/\s+([)\]}])/g, "$1")
+    .trim();
+}
+
+function hasUsablePublicHostname(parsed: URL): boolean {
+  const host = parsed.hostname.trim().toLowerCase();
+  if (!host || host.endsWith(".") || !host.includes(".")) {
+    return false;
+  }
+  const tld = host.split(".").at(-1) ?? "";
+  return /^[a-z]{2,63}$/i.test(tld);
 }
 
 function normalizeHttpUrl(value: string): string | null {
-  const trimmed = value.trim();
+  const trimmed = decodeXmlEntities(value).trim();
   if (!trimmed) {
     return null;
   }
+  const compact = trimmed.replace(/\s+/g, "");
+  if (!compact) {
+    return null;
+  }
   try {
-    const parsed = new URL(trimmed);
+    const parsed = new URL(compact);
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return null;
+    }
+    if (!hasUsablePublicHostname(parsed)) {
       return null;
     }
     return parsed.toString();
   } catch {
     return null;
   }
+}
+
+function stripBrokenHttpTokens(value: string): string {
+  return value
+    .replace(/https?:\/\/[^\s<>"'`]+/gi, (candidate) => {
+      const sanitized = candidate.replace(/[),.!?;:]+$/g, "");
+      return normalizeHttpUrl(sanitized) ? candidate : "";
+    })
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 function parseTagAttributes(raw: string): Record<string, string> {
@@ -207,7 +253,7 @@ function parseFeedItems(xml: string): ParsedRssItem[] {
     const guid = trimTo(extractTagBody(block, ["guid", "id"]), 500);
     const pubDate = trimTo(extractTagBody(block, ["pubDate", "published", "updated"]), 120);
     const description = extractTagBody(block, ["content:encoded", "description", "summary", "content"]);
-    const bodyText = stripHtmlToText(description);
+    const bodyText = stripBrokenHttpTokens(stripHtmlToText(description));
 
     let link = normalizeHttpUrl(extractTagBody(block, ["link"])) ?? "";
     if (!link) {

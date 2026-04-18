@@ -18,8 +18,9 @@ interface VideoComposerProps {
   countries: CountrySupport[];
   onPublish: (payload: PublishPayload) => void;
   isSignedIn: boolean;
-  onSignInWithGoogle: () => Promise<boolean>;
-  googleSignInEnabled: boolean;
+  onSignInWithPasskey: () => Promise<boolean>;
+  onCreatePasskeyOnDevice: () => Promise<boolean>;
+  passkeySignInEnabled: boolean;
 }
 
 const MAX_DAILY_UPLOAD_BYTES = 50 * 1024 * 1024;
@@ -67,6 +68,22 @@ function TrashIcon() {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true">
       <path d="M9 3H15L16 4H21V6H3V4H8L9 3ZM6 8H18L17 21H7L6 8ZM10 10V18H12V10H10ZM12 10V18H14V10H12Z" />
+    </svg>
+  );
+}
+
+function ChevronDownIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M6.7 9.3L12 14.6L17.3 9.3L19 11L12 18L5 11L6.7 9.3Z" />
+    </svg>
+  );
+}
+
+function ChevronUpIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M17.3 14.7L12 9.4L6.7 14.7L5 13L12 6L19 13L17.3 14.7Z" />
     </svg>
   );
 }
@@ -342,8 +359,9 @@ export function VideoComposer({
   countries,
   onPublish,
   isSignedIn,
-  onSignInWithGoogle,
-  googleSignInEnabled
+  onSignInWithPasskey,
+  onCreatePasskeyOnDevice,
+  passkeySignInEnabled
 }: VideoComposerProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const linkInputRef = useRef<HTMLInputElement | null>(null);
@@ -367,7 +385,8 @@ export function VideoComposer({
   const [mediaBytes, setMediaBytes] = useState(0);
   const [dailyUploadUsage, setDailyUploadUsage] = useState<DailyUploadUsageState>(initialDailyUsage);
   const [publishAuthModalOpen, setPublishAuthModalOpen] = useState(false);
-  const [googleSignInBusy, setGoogleSignInBusy] = useState(false);
+  const [publishAuthModalTab, setPublishAuthModalTab] = useState<"signin" | "signup">("signin");
+  const [signInBusyProvider, setSignInBusyProvider] = useState<"passkey" | null>(null);
   const [status, setStatus] = useState<string>("");
 
   function dailyBudgetStatus(bytesUsed: number): string {
@@ -418,8 +437,15 @@ export function VideoComposer({
       return;
     }
     setPublishAuthModalOpen(false);
-    setGoogleSignInBusy(false);
+    setSignInBusyProvider(null);
   }, [isSignedIn]);
+
+  useEffect(() => {
+    if (!publishAuthModalOpen) {
+      return;
+    }
+    setPublishAuthModalTab("signin");
+  }, [publishAuthModalOpen]);
 
   useEffect(() => {
     if (!captionTextareaRef.current) {
@@ -707,19 +733,34 @@ export function VideoComposer({
     setStatus(`Draft cleared. ${dailyBudgetStatus(usage.bytesUsed)}`);
   }
 
-  async function handleGoogleSignInFromModal() {
-    if (googleSignInBusy || !googleSignInEnabled) {
+  async function handlePasskeySignInFromModal() {
+    if (signInBusyProvider || !passkeySignInEnabled) {
       return;
     }
-    setGoogleSignInBusy(true);
-    const success = await onSignInWithGoogle();
-    setGoogleSignInBusy(false);
+    setSignInBusyProvider("passkey");
+    const success = await onSignInWithPasskey();
+    setSignInBusyProvider(null);
     if (success) {
       setPublishAuthModalOpen(false);
       setStatus("Signed in. You can publish your post now.");
       return;
     }
-    setStatus("Google sign-in did not complete. Please try again.");
+    setStatus("Passkey sign-in did not complete. Please try again.");
+  }
+
+  async function handleCreatePasskeyOnDeviceFromModal() {
+    if (signInBusyProvider || !passkeySignInEnabled) {
+      return;
+    }
+    setSignInBusyProvider("passkey");
+    const success = await onCreatePasskeyOnDevice();
+    setSignInBusyProvider(null);
+    if (success) {
+      setPublishAuthModalOpen(false);
+      setStatus("Passkey created. You can publish your post now.");
+      return;
+    }
+    setStatus("Passkey setup did not complete. Please try again.");
   }
 
   return (
@@ -732,11 +773,13 @@ export function VideoComposer({
           </span>
           <button
             type="button"
-            className="composer__collapse"
+            className="composer__collapse composer__collapse--icon"
             onClick={() => setCollapsed(false)}
             aria-expanded="false"
+            aria-label="Expand create post"
+            title="Expand create post"
           >
-            Expand
+            <ChevronDownIcon />
           </button>
         </div>
       ) : (
@@ -813,11 +856,13 @@ export function VideoComposer({
             </div>
             <button
               type="button"
-              className="composer__collapse composer__collapse--header"
+              className="composer__collapse composer__collapse--header composer__collapse--icon"
               onClick={() => setCollapsed(true)}
               aria-expanded="true"
+              aria-label="Minimize create post"
+              title="Minimize create post"
             >
-              Minimize
+              <ChevronUpIcon />
             </button>
           </header>
           {pullMode === "image" || pullMode === "video" ? (
@@ -1008,6 +1053,29 @@ export function VideoComposer({
           >
             <h4>Sign in required</h4>
             <p>{SIGN_IN_REQUIRED_POST_MESSAGE}</p>
+            <div className="auth-modal__tabs" role="tablist" aria-label="Authentication mode">
+              <button
+                type="button"
+                className={publishAuthModalTab === "signin" ? "auth-modal__tab is-active" : "auth-modal__tab"}
+                onClick={() => setPublishAuthModalTab("signin")}
+                role="tab"
+                aria-selected={publishAuthModalTab === "signin"}
+              >
+                Sign in
+              </button>
+              <button
+                type="button"
+                className={publishAuthModalTab === "signup" ? "auth-modal__tab is-active" : "auth-modal__tab"}
+                onClick={() => setPublishAuthModalTab("signup")}
+                role="tab"
+                aria-selected={publishAuthModalTab === "signup"}
+              >
+                Sign up
+              </button>
+            </div>
+            <p className="auth-modal__note">
+              Phone QR sign-in is recommended from the top-right Guest/User menu. This modal supports on-device passkey sign-in.
+            </p>
             <div className="auth-modal__actions">
               <button
                 type="button"
@@ -1016,18 +1084,33 @@ export function VideoComposer({
               >
                 Close
               </button>
-              <button
-                type="button"
-                className="yt-button-primary"
-                onClick={() => void handleGoogleSignInFromModal()}
-                disabled={!googleSignInEnabled || googleSignInBusy}
-              >
-                {googleSignInBusy
-                  ? "Signing in..."
-                  : googleSignInEnabled
-                    ? "Sign in with Google"
-                    : "Google sign-in unavailable"}
-              </button>
+              {publishAuthModalTab === "signin" ? (
+                <button
+                  type="button"
+                  className="yt-button-secondary"
+                  onClick={() => void handlePasskeySignInFromModal()}
+                  disabled={!passkeySignInEnabled || signInBusyProvider !== null}
+                >
+                  {signInBusyProvider === "passkey"
+                    ? "Checking device..."
+                    : passkeySignInEnabled
+                      ? "Sign in on this device"
+                      : "Passkey unavailable"}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="yt-button-secondary"
+                  onClick={() => void handleCreatePasskeyOnDeviceFromModal()}
+                  disabled={!passkeySignInEnabled || signInBusyProvider !== null}
+                >
+                  {signInBusyProvider === "passkey"
+                    ? "Setting up..."
+                    : passkeySignInEnabled
+                      ? "Create passkey on this device"
+                      : "Passkey unavailable"}
+                </button>
+              )}
             </div>
           </div>
         </div>

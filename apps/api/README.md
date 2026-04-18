@@ -14,7 +14,15 @@ corepack pnpm dev
 - `GET /healthz`
 - `GET /v1/moderation/health`
 - `POST /v1/moderation/analyze`
-- `POST /v1/auth/google/session`
+- `POST /v1/auth/human-challenge`
+- `POST /v1/auth/passkey/register/options`
+- `POST /v1/auth/passkey/register/verify`
+- `POST /v1/auth/passkey/authenticate/options`
+- `POST /v1/auth/passkey/authenticate/verify`
+- `POST /v1/auth/pairing/start`
+- `POST /v1/auth/pairing/approve`
+- `POST /v1/auth/pairing/status`
+- `POST /v1/auth/pairing/complete`
 - `GET /v1/auth/session`
 - `POST /v1/auth/sign-out`
 - `PUT /v1/profiles/self`
@@ -55,19 +63,31 @@ When throttled, the API returns `429 rate_limited` (with `retry_after_ms`). When
 
 ## Auth Environment
 
-- `GOOGLE_OAUTH_CLIENT_IDS` (comma-separated OAuth web client IDs allowed by the API)
 - `AUTH_SESSION_TTL_HOURS` (defaults to `168`)
 - `AUTH_SESSION_STORE` (`auto`, `memory`, or `redis`; defaults to `memory`)
 - `AUTH_SESSION_REDIS_PREFIX` (defaults to `pawmaq:session:`)
 - `REDIS_URL` (required when `AUTH_SESSION_STORE=redis`)
+- `AUTH_COOKIE_SAME_SITE` (`strict`, `lax`, or `none`; defaults `strict`)
+- `AUTH_COOKIE_SECURE` (`true`/`false`; defaults `false`, forced secure in production)
+- `AUTH_COOKIE_DOMAIN` (optional cookie domain, defaults empty)
+- `PASSKEY_LEDGER_PATH` (default `.context/passkey-ledger.json`)
+- `WEBAUTHN_RP_NAME` (default `pawmaq.com`)
+- `WEBAUTHN_RP_ID` (default `localhost`)
+- `WEBAUTHN_EXPECTED_ORIGINS` (comma-separated, required for your web origins)
+- `GUEST_PASSKEY_SESSION_TTL_MINUTES` (default `15`)
 - `TEST_LAB_ENABLED` (`true`/`false`, defaults `false`; ignored in production)
 
 Security behavior:
-- In `production`, API startup fails if `GOOGLE_OAUTH_CLIENT_IDS` is empty.
 - In `production`, API startup fails unless `AUTH_SESSION_STORE=redis`.
-- `POST /v1/auth/google/session` is rate-limited per IP.
-- Google token audience is checked against `GOOGLE_OAUTH_CLIENT_IDS`.
+- `AUTH_COOKIE_SAME_SITE=none` requires `AUTH_COOKIE_SECURE=true`.
+- `POST /v1/auth/passkey/*/options` requires a valid proof from `POST /v1/auth/human-challenge`.
+- Human verification challenges are short-lived, one-time-use, and IP-bound.
 - Session records are persisted in Redis when available, so sessions survive API restarts.
+
+Device pairing:
+- `/v1/auth/pairing/start` accepts optional `intent`:
+  - `sign_in` (default): QR pairs a signed-in phone to sign in this device.
+  - `link`: QR links another authenticated identity into the current account.
 
 ## RSS Bot Ingestion
 

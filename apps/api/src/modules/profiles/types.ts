@@ -1,4 +1,4 @@
-export type ProfileProvider = "google" | "bot";
+export type ProfileProvider = "google" | "passkey" | "bot";
 export type ProfilePostInteractionAction =
   | "seen"
   | "liked"
@@ -43,10 +43,18 @@ export interface ProfilePrivateCryptoBundle {
   updated_at: string;
 }
 
-export interface ProfileLedgerUserRecord {
-  user_id: string;
+export interface ProfileLinkedAuthIdentity {
   provider: ProfileProvider;
   provider_subject_hash: string;
+  linked_at: string;
+}
+
+export interface ProfileLedgerUserRecord {
+  user_id: string;
+  account_id: string;
+  provider: ProfileProvider;
+  provider_subject_hash: string;
+  linked_auth_identities: ProfileLinkedAuthIdentity[];
   username: string;
   username_normalized: string;
   usertag: string;
@@ -69,7 +77,10 @@ export interface ProfileLedgerUserRecord {
 export interface ProfileLedger {
   ledger_version: string;
   generated_at: string;
+  anonymous_user_sequence: number;
   users: Record<string, ProfileLedgerUserRecord>;
+  account_index: Record<string, string>;
+  auth_identity_index: Record<string, string>;
   username_index: Record<string, string>;
   usertag_index: Record<string, string>;
   daily_ledger_quota_by_user: Record<string, Record<string, ProfileDailyQuotaRecord>>;
@@ -80,7 +91,6 @@ export interface SessionSyncInput {
   subject: string;
   name: string;
   email?: string;
-  picture?: string;
 }
 
 export interface ProfileUpdateInput {
@@ -135,7 +145,9 @@ export interface RecordCreatedPostByHandleInput {
 
 export interface PublicProfile {
   userId: string;
+  accountId: string;
   provider: ProfileProvider;
+  linkedAuthProviders: ProfileProvider[];
   name: string;
   username: string;
   handle: string;

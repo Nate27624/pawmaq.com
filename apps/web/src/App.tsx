@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import isoCountries from "i18n-iso-countries";
 import enLocale from "i18n-iso-countries/langs/en.json";
+import { browserSupportsWebAuthn, startAuthentication, startRegistration } from "@simplewebauthn/browser";
 import { AccountMenu } from "./components/AccountMenu";
 import { FeedCard } from "./components/FeedCard";
 import { ProfilePage } from "./components/ProfilePage";
@@ -13,10 +14,11 @@ import { API_BASE_URL } from "./config/api";
 import { worldSupportData } from "./data/mockData";
 import type { FeedPost, FeedTab, ThemeMode } from "./types";
 
-const FOLLOWING_HANDLES = new Set(["@linapark", "@mayachow"]);
+const FOLLOWING_HANDLES = new Set<string>();
 type TimeWindow = "10m" | "1h" | "12h" | "24h" | "1w" | "1m" | "3m" | "1y";
 type FeedSortMode = "likes" | "approval";
 type WorldFilterMode = "all" | "globe" | "random" | "anonymous";
+type DotTone = "red" | "green" | "blue";
 
 const TIME_WINDOW_MAX_HOURS: Record<TimeWindow, number> = {
   "10m": 10 / 60,
@@ -46,6 +48,7 @@ const TIME_WINDOW_STORAGE_KEY = "pawmaq-feed-time-window";
 const FEED_TAB_STORAGE_KEY = "pawmaq-feed-active-tab";
 const SIGNED_IN_KEY = "pawmaq-account-signed-in";
 const SIGNED_IN_PROFILE_KEY = "pawmaq-account-signed-in-profile";
+const GUEST_DEVICE_VERIFIED_AT_KEY = "pawmaq-guest-device-verified-at";
 const LAST_SELECTED_COUNTRY_KEY = "pawmaq-world-last-country-filter";
 const FOLLOWED_HANDLES_KEY = "pawmaq-followed-handles";
 const SCROLL_TARGET_POST_KEY = "pawmaq-scroll-target-post-id";
@@ -58,6 +61,7 @@ const ANONYMOUS_COUNTRY_FILTER = "ANON";
 const INITIAL_POOL_SIZE = 0;
 const LOAD_BATCH_SIZE = 12;
 const MAX_PERSISTED_POSTS = 400;
+const GUEST_PASSKEY_REAUTH_INTERVAL_MS = 15 * 60 * 1000;
 
 isoCountries.registerLocale(enLocale);
 
@@ -70,15 +74,16 @@ interface RandomAuthorProfile {
 }
 
 interface StoredAuthProfile {
-  provider: "google";
+  provider: "passkey";
   name: string;
   email?: string;
-  picture?: string;
 }
 
 interface ServerLedgerProfile {
   userId: string;
-  provider: "google" | "bot";
+  provider: "google" | "passkey" | "bot";
+  accountId?: string;
+  linkedAuthProviders?: Array<"google" | "passkey" | "bot">;
   name: string;
   username: string;
   handle: string;
@@ -106,10 +111,70 @@ interface ProfileEditorDraft {
   shareSocialGraph: boolean;
 }
 
+interface PendingHandleChangeSave {
+  draft: ProfileEditorDraft;
+  previousHandle: string;
+  previousName: string;
+}
+
+interface FollowingProfileSummary {
+  handle: string;
+  name: string;
+  avatarUrl?: string;
+}
+
 interface AuthSessionResponse {
   ok: boolean;
   profile: ServerLedgerProfile;
+  guest?: boolean;
 }
+
+interface PasskeyBeginResponse<TOptions> {
+  challengeToken: string;
+  options: TOptions;
+}
+
+interface HumanChallengeResponse {
+  challengeId: string;
+  nonce: string;
+  purpose: "passkey_register" | "passkey_auth";
+  algorithm: "sha256-leading-zero-bits";
+  difficultyBits: number;
+  expiresAtMs: string;
+}
+
+interface HumanProofPayload {
+  challengeId: string;
+  counter: number;
+  digestHex: string;
+}
+
+interface DevicePairingStartResponse {
+  ok: boolean;
+  pairingId: string;
+  approvalSecret: string;
+  pollSecret: string;
+  expiresAtMs: string;
+  intent?: "sign_in" | "link";
+}
+
+interface DevicePairingStatusResponse {
+  status: "pending" | "approved" | "consumed" | "expired";
+  handoffToken?: string;
+}
+
+interface DevicePairingApprovalRequest {
+  pairingId: string;
+  approvalSecret: string;
+}
+
+type DevicePairingIntent = "sign_in" | "link";
+type ProfileSaveMessageTone = "neutral" | "success" | "warning" | "error";
+
+type PasskeyRegistrationOptions = Parameters<typeof startRegistration>[0]["optionsJSON"];
+type PasskeyRegistrationResponse = Awaited<ReturnType<typeof startRegistration>>;
+type PasskeyAuthenticationOptions = Parameters<typeof startAuthentication>[0]["optionsJSON"];
+type PasskeyAuthenticationResponse = Awaited<ReturnType<typeof startAuthentication>>;
 
 interface LedgerPostContentBlockText {
   type: "text";
@@ -170,6 +235,17 @@ interface PrivateCryptoBundleResponse {
   bundle: PrivateCryptoBundlePayload | null;
 }
 
+interface PrivateEncryptedBlockPayload {
+  algorithm: string;
+  keyFingerprint: string;
+  ivBase64: string;
+  ciphertextBase64: string;
+}
+
+interface PrivateEncryptedBlockResponse {
+  block: PrivateEncryptedBlockPayload | null;
+}
+
 type RecoveryPassphraseMode = "setup" | "unlock";
 
 interface RecoveryPassphrasePromptRequest {
@@ -204,31 +280,6 @@ interface EffectivePostEngagement {
   comments: number;
 }
 
-interface GoogleTokenResponse {
-  access_token?: string;
-  error?: string;
-  error_description?: string;
-}
-
-interface GoogleTokenClient {
-  requestAccessToken: (options?: { prompt?: string }) => void;
-}
-
-interface GoogleOauth2Api {
-  initTokenClient: (options: {
-    client_id: string;
-    scope: string;
-    callback: (response: GoogleTokenResponse) => void;
-  }) => GoogleTokenClient;
-}
-
-interface GoogleApi {
-  accounts: {
-    oauth2: GoogleOauth2Api;
-  };
-}
-
-let googleIdentityScriptPromise: Promise<void> | null = null;
 let cachedMasterKeyPromise: Promise<CryptoKey> | null = null;
 let masterKeySetupPromptSuppressed = false;
 let recoveryPassphrasePromptHandler: RecoveryPassphrasePromptHandler | null = null;
@@ -339,12 +390,42 @@ function preferredLinkedPostId(): string | null {
   return value.length > 0 ? value : null;
 }
 
+function linkedPostIdFromLocation(): string | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  const params = new URLSearchParams(window.location.search);
+  const fromPostId = params.get("postId");
+  const fromLegacyPost = params.get("post");
+  const fromHashMatch = window.location.hash.match(/^#post-(.+)$/);
+  const fromHash = fromHashMatch?.[1] ?? "";
+  const value = (fromPostId ?? fromLegacyPost ?? fromHash ?? "").trim();
+  return value.length > 0 ? value : null;
+}
+
+function pairingApprovalFromLocation(): DevicePairingApprovalRequest | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  const params = new URLSearchParams(window.location.search);
+  const linkDevice = params.get("linkDevice");
+  const pairingId = (params.get("pairingId") ?? "").trim();
+  const approvalSecret = (params.get("approvalSecret") ?? "").trim();
+  if (linkDevice !== "1" || pairingId.length === 0 || approvalSecret.length === 0) {
+    return null;
+  }
+  return {
+    pairingId,
+    approvalSecret
+  };
+}
+
 function preferredFeedTab(): FeedTab {
   if (typeof window === "undefined") {
     return "following";
   }
   const stored = window.localStorage.getItem(FEED_TAB_STORAGE_KEY);
-  if (stored === "following" || stored === "world") {
+  if (stored === "saved" || stored === "following" || stored === "world") {
     return stored;
   }
   return "following";
@@ -469,16 +550,15 @@ function readSignedInProfile(): StoredAuthProfile | null {
   try {
     const parsed = JSON.parse(raw) as Partial<StoredAuthProfile>;
     if (
-      parsed.provider !== "google" ||
+      parsed.provider !== "passkey" ||
       typeof parsed.name !== "string"
     ) {
       return null;
     }
     return {
-      provider: "google",
+      provider: parsed.provider,
       name: parsed.name,
-      email: typeof parsed.email === "string" ? parsed.email : undefined,
-      picture: typeof parsed.picture === "string" ? parsed.picture : undefined
+      email: typeof parsed.email === "string" ? parsed.email : undefined
     };
   } catch {
     return null;
@@ -494,6 +574,27 @@ function readLastSelectedCountryCode(): string | null {
     return null;
   }
   return stored;
+}
+
+function readGuestDeviceVerifiedAtMs(): number {
+  if (typeof window === "undefined") {
+    return Date.now();
+  }
+  const raw = window.localStorage.getItem(GUEST_DEVICE_VERIFIED_AT_KEY);
+  const parsed = raw ? Number.parseInt(raw, 10) : Number.NaN;
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    const now = Date.now();
+    window.localStorage.setItem(GUEST_DEVICE_VERIFIED_AT_KEY, String(now));
+    return now;
+  }
+  return parsed;
+}
+
+function writeGuestDeviceVerifiedAtMs(timestampMs: number): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.localStorage.setItem(GUEST_DEVICE_VERIFIED_AT_KEY, String(Math.max(0, Math.floor(timestampMs))));
 }
 
 function readFollowedHandles(): Set<string> {
@@ -588,11 +689,11 @@ function hydrateStoredPost(entry: unknown, nowMs: number): FeedPost | null {
 
   return {
     id: candidate.id,
-    author: candidate.author,
+    author: decodeBasicHtmlEntities(candidate.author),
     handle: candidate.handle,
     isAnonymous: candidate.isAnonymous === true,
     anonymousKey: typeof candidate.anonymousKey === "string" ? candidate.anonymousKey : undefined,
-    caption: candidate.caption,
+    caption: normalizeCaptionWhitespace(decodeBasicHtmlEntities(candidate.caption)),
     originalLanguage: typeof candidate.originalLanguage === "string" ? candidate.originalLanguage : "English",
     translatedCaptions,
     countryCode: candidate.countryCode,
@@ -648,7 +749,7 @@ function readOwnServerProfileCache(): ServerLedgerProfile | null {
   try {
     const parsed = JSON.parse(raw) as Partial<ServerLedgerProfile>;
     if (
-      parsed.provider !== "google" ||
+      (parsed.provider !== "google" && parsed.provider !== "passkey") ||
       typeof parsed.userId !== "string" ||
       typeof parsed.name !== "string" ||
       typeof parsed.username !== "string" ||
@@ -679,6 +780,45 @@ function normalizeHandle(value: string): string {
     return "@member";
   }
   return `@${stripped.slice(0, 32)}`;
+}
+
+function normalizeHandleList(values: string[]): string[] {
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const value of values) {
+    if (typeof value !== "string" || !value.trim()) {
+      continue;
+    }
+    const handle = normalizeHandle(value);
+    if (handle === "@member" || seen.has(handle)) {
+      continue;
+    }
+    seen.add(handle);
+    normalized.push(handle);
+  }
+  return normalized;
+}
+
+function privateFollowingHandlesFromPayload(payload: unknown): string[] {
+  if (!payload || typeof payload !== "object") {
+    return [];
+  }
+  const candidate = payload as {
+    privateSocialGraph?: {
+      followingHandles?: unknown;
+    };
+    userPreferences?: {
+      followingHandles?: unknown;
+    };
+  };
+  const fromPrivateBlock = Array.isArray(candidate.privateSocialGraph?.followingHandles)
+    ? candidate.privateSocialGraph?.followingHandles
+    : [];
+  const fromLegacy = Array.isArray(candidate.userPreferences?.followingHandles)
+    ? candidate.userPreferences?.followingHandles
+    : [];
+  const source = fromPrivateBlock.length > 0 ? fromPrivateBlock : fromLegacy;
+  return normalizeHandleList(source.filter((value): value is string => typeof value === "string"));
 }
 
 function fallbackHandleFromAuthProfile(profile: StoredAuthProfile | null): string {
@@ -1003,17 +1143,63 @@ async function encryptPrivateProfilePayload(payload: unknown): Promise<{
   };
 }
 
+async function decryptPrivateProfilePayload(block: PrivateEncryptedBlockPayload): Promise<unknown> {
+  const cryptoApi = window.crypto?.subtle;
+  if (!cryptoApi) {
+    throw new Error("WebCrypto is not available in this browser.");
+  }
+  const key = await ensureAccountMasterKey();
+  const iv = base64ToBytes(block.ivBase64);
+  const ciphertext = base64ToBytes(block.ciphertextBase64);
+  const decrypted = await cryptoApi.decrypt(
+    { name: "AES-GCM", iv: Uint8Array.from(iv).buffer as ArrayBuffer },
+    key,
+    Uint8Array.from(ciphertext).buffer as ArrayBuffer
+  );
+  const decoded = new TextDecoder().decode(new Uint8Array(decrypted));
+  return JSON.parse(decoded) as unknown;
+}
+
 class ApiError extends Error {
   readonly status: number;
 
   readonly code: string;
 
-  constructor(status: number, code: string, message?: string) {
+  readonly retryAfterMs: number | null;
+
+  constructor(status: number, code: string, message?: string, retryAfterMs?: number) {
     super(message ?? `Request failed with status ${status}.`);
     this.name = "ApiError";
     this.status = status;
     this.code = code;
+    this.retryAfterMs = typeof retryAfterMs === "number" && Number.isFinite(retryAfterMs) && retryAfterMs > 0
+      ? Math.floor(retryAfterMs)
+      : null;
   }
+}
+
+function delayMs(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    globalThis.setTimeout(resolve, ms);
+  });
+}
+
+function isRetryableRequestError(error: unknown): boolean {
+  if (error instanceof ApiError) {
+    return [408, 429, 500, 502, 503, 504].includes(error.status);
+  }
+  if (error instanceof Error) {
+    return error.message.includes("Unable to reach the API server");
+  }
+  return false;
+}
+
+function retryDelayForAttempt(error: unknown, attempt: number): number {
+  if (error instanceof ApiError && error.retryAfterMs !== null) {
+    return Math.min(Math.max(error.retryAfterMs, 300), 8_000);
+  }
+  const cappedAttempt = Math.max(1, Math.min(attempt, 4));
+  return Math.min(400 * 2 ** (cappedAttempt - 1), 4_000);
 }
 
 async function fetchApi<T>(path: string, init?: RequestInit): Promise<T> {
@@ -1023,44 +1209,187 @@ async function fetchApi<T>(path: string, init?: RequestInit): Promise<T> {
     headers.set("content-type", "application/json");
   }
 
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    credentials: "include",
-    ...init,
-    headers
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, {
+      credentials: "include",
+      ...init,
+      headers
+    });
+  } catch {
+    throw new Error("Unable to reach the API server. Make sure the API is running, then retry.");
+  }
 
   const payload = (await response.json().catch(() => null)) as
     | {
         message?: string;
         error?: string;
+        retry_after_ms?: number;
       }
     | null;
 
   if (!response.ok) {
-    throw new ApiError(response.status, payload?.error ?? "request_failed", payload?.message);
+    throw new ApiError(response.status, payload?.error ?? "request_failed", payload?.message, payload?.retry_after_ms);
   }
 
   return payload as T;
 }
 
-async function createGoogleSession(accessToken: string, clientId: string): Promise<AuthSessionResponse> {
-  return fetchApi<AuthSessionResponse>("/v1/auth/google/session", {
+async function requestHumanChallenge(
+  purpose: "passkey_register" | "passkey_auth"
+): Promise<HumanChallengeResponse> {
+  return fetchApi<HumanChallengeResponse>("/v1/auth/human-challenge", {
     method: "POST",
     body: JSON.stringify({
-      accessToken,
-      clientId
+      purpose
     })
   });
 }
 
-async function fetchSessionProfile(): Promise<ServerLedgerProfile> {
-  const response = await fetchApi<AuthSessionResponse>("/v1/auth/session");
-  return response.profile;
+function leadingZeroBitsFromHex(hex: string): number {
+  let count = 0;
+  for (let index = 0; index < hex.length; index += 1) {
+    const nibble = Number.parseInt(hex[index] ?? "0", 16);
+    if (!Number.isFinite(nibble)) {
+      break;
+    }
+    if (nibble === 0) {
+      count += 4;
+      continue;
+    }
+    if ((nibble & 0b1000) === 0) count += 1;
+    if ((nibble & 0b0100) === 0) count += 1;
+    if ((nibble & 0b0010) === 0) count += 1;
+    break;
+  }
+  return count;
+}
+
+async function sha256Hex(input: string): Promise<string> {
+  if (!("crypto" in globalThis) || !globalThis.crypto?.subtle) {
+    throw new Error("Anonymous human verification is unavailable in this browser.");
+  }
+  const data = new TextEncoder().encode(input);
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", data);
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function solveHumanChallenge(challenge: HumanChallengeResponse): Promise<HumanProofPayload> {
+  const maxAttempts = 4_000_000;
+  for (let counter = 0; counter < maxAttempts; counter += 1) {
+    const payload = `${challenge.challengeId}:${challenge.nonce}:${counter}`;
+    const digestHex = await sha256Hex(payload);
+    if (leadingZeroBitsFromHex(digestHex) >= challenge.difficultyBits) {
+      return {
+        challengeId: challenge.challengeId,
+        counter,
+        digestHex
+      };
+    }
+  }
+  throw new Error("Unable to complete anonymous human verification challenge.");
+}
+
+async function beginPasskeyRegistration(humanProof: HumanProofPayload): Promise<PasskeyBeginResponse<PasskeyRegistrationOptions>> {
+  return fetchApi<PasskeyBeginResponse<PasskeyRegistrationOptions>>("/v1/auth/passkey/register/options", {
+    method: "POST",
+    body: JSON.stringify({
+      humanProof
+    })
+  });
+}
+
+async function completePasskeyRegistration(
+  challengeToken: string,
+  response: PasskeyRegistrationResponse,
+  guest: boolean
+): Promise<AuthSessionResponse> {
+  return fetchApi<AuthSessionResponse>("/v1/auth/passkey/register/verify", {
+    method: "POST",
+    body: JSON.stringify({
+      challengeToken,
+      response,
+      guest
+    })
+  });
+}
+
+async function beginPasskeyAuthentication(humanProof: HumanProofPayload): Promise<PasskeyBeginResponse<PasskeyAuthenticationOptions>> {
+  return fetchApi<PasskeyBeginResponse<PasskeyAuthenticationOptions>>("/v1/auth/passkey/authenticate/options", {
+    method: "POST",
+    body: JSON.stringify({
+      humanProof
+    })
+  });
+}
+
+async function completePasskeyAuthentication(
+  challengeToken: string,
+  response: PasskeyAuthenticationResponse,
+  guest: boolean
+): Promise<AuthSessionResponse> {
+  return fetchApi<AuthSessionResponse>("/v1/auth/passkey/authenticate/verify", {
+    method: "POST",
+    body: JSON.stringify({
+      challengeToken,
+      response,
+      guest
+    })
+  });
+}
+
+async function fetchSessionState(): Promise<AuthSessionResponse> {
+  return fetchApi<AuthSessionResponse>("/v1/auth/session");
 }
 
 async function signOutSession(): Promise<void> {
   await fetchApi<{ ok: boolean }>("/v1/auth/sign-out", {
     method: "POST"
+  });
+}
+
+async function startDevicePairing(intent: DevicePairingIntent): Promise<DevicePairingStartResponse> {
+  return fetchApi<DevicePairingStartResponse>("/v1/auth/pairing/start", {
+    method: "POST",
+    body: JSON.stringify({ intent })
+  });
+}
+
+async function approveDevicePairing(pairingId: string, approvalSecret: string): Promise<void> {
+  await fetchApi<{ ok: boolean }>("/v1/auth/pairing/approve", {
+    method: "POST",
+    body: JSON.stringify({
+      pairingId,
+      approvalSecret
+    })
+  });
+}
+
+async function pollDevicePairing(
+  pairingId: string,
+  pollSecret: string
+): Promise<DevicePairingStatusResponse> {
+  return fetchApi<DevicePairingStatusResponse>("/v1/auth/pairing/status", {
+    method: "POST",
+    body: JSON.stringify({
+      pairingId,
+      pollSecret
+    })
+  });
+}
+
+async function completeDevicePairing(
+  pairingId: string,
+  pollSecret: string,
+  handoffToken: string
+): Promise<AuthSessionResponse> {
+  return fetchApi<AuthSessionResponse>("/v1/auth/pairing/complete", {
+    method: "POST",
+    body: JSON.stringify({
+      pairingId,
+      pollSecret,
+      handoffToken
+    })
   });
 }
 
@@ -1070,6 +1399,19 @@ async function writePrivateProfileEncryptedBlock(payload: unknown): Promise<void
     method: "PUT",
     body: JSON.stringify(encrypted)
   });
+}
+
+async function fetchPrivateProfileEncryptedBlock(): Promise<PrivateEncryptedBlockPayload | null> {
+  const response = await fetchApi<PrivateEncryptedBlockResponse>("/v1/profiles/private-block");
+  return response.block;
+}
+
+async function readPrivateProfilePayload(): Promise<unknown | null> {
+  const block = await fetchPrivateProfileEncryptedBlock();
+  if (!block) {
+    return null;
+  }
+  return decryptPrivateProfilePayload(block);
 }
 
 async function saveProfileLedger(draft: ProfileEditorDraft): Promise<ServerLedgerProfile> {
@@ -1086,6 +1428,27 @@ async function saveProfileLedger(draft: ProfileEditorDraft): Promise<ServerLedge
       shareSocialGraph: draft.shareSocialGraph
     })
   });
+}
+
+async function saveProfileLedgerWithRetry(
+  draft: ProfileEditorDraft,
+  onRetry: (attempt: number, maxAttempts: number, retryInMs: number) => void
+): Promise<ServerLedgerProfile> {
+  const maxAttempts = 3;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await saveProfileLedger(draft);
+    } catch (error) {
+      const canRetry = attempt < maxAttempts && isRetryableRequestError(error);
+      if (!canRetry) {
+        throw error;
+      }
+      const retryInMs = retryDelayForAttempt(error, attempt);
+      onRetry(attempt + 1, maxAttempts, retryInMs);
+      await delayMs(retryInMs);
+    }
+  }
+  throw new Error("Unable to save profile right now.");
 }
 
 async function setFollowInLedger(targetHandle: string, follow: boolean): Promise<ServerLedgerProfile> {
@@ -1175,6 +1538,37 @@ function ledgerCreatedAtMs(iso: string, nowMs: number): number {
   return parsed;
 }
 
+function decodeBasicHtmlEntities(value: string): string {
+  return value
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, "\"")
+    .replace(/&apos;/g, "'")
+    .replace(/&#39;/g, "'")
+    .replace(/&rsquo;/g, "'")
+    .replace(/&lsquo;/g, "'")
+    .replace(/&rdquo;/g, "\"")
+    .replace(/&ldquo;/g, "\"")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&#x([0-9a-fA-F]+);/g, (_match, hex: string) => String.fromCodePoint(Number.parseInt(hex, 16)))
+    .replace(/&#([0-9]+);/g, (_match, dec: string) => String.fromCodePoint(Number.parseInt(dec, 10)));
+}
+
+function normalizeCaptionWhitespace(value: string): string {
+  return value
+    .replace(/[\u00A0\u2007\u202F]/g, " ")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/[ \t\u00A0\u2007\u202F]*\n[ \t\u00A0\u2007\u202F]*/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/[ \t\u00A0\u2007\u202F]{2,}/g, " ")
+    .replace(/\s+([,.;!?])/g, "$1")
+    .replace(/([([{])\s+/g, "$1")
+    .replace(/\s+([)\]}])/g, "$1")
+    .trim();
+}
+
 function feedPostFromLedgerRecord(record: LedgerPostRecord, nowMs: number): FeedPost | null {
   const postId = typeof record.post_id === "string" ? record.post_id.trim() : "";
   if (!postId) {
@@ -1183,7 +1577,9 @@ function feedPostFromLedgerRecord(record: LedgerPostRecord, nowMs: number): Feed
 
   const textBlock = record.content_blocks.find((block): block is LedgerPostContentBlockText => block.type === "text");
   const mediaBlock = record.content_blocks.find((block): block is LedgerPostContentBlockMedia => block.type === "media");
-  const caption = typeof textBlock?.text === "string" ? textBlock.text : "";
+  const caption = normalizeCaptionWhitespace(
+    decodeBasicHtmlEntities(typeof textBlock?.text === "string" ? textBlock.text : "")
+  );
   if (!caption.trim()) {
     return null;
   }
@@ -1200,7 +1596,7 @@ function feedPostFromLedgerRecord(record: LedgerPostRecord, nowMs: number): Feed
 
   return {
     id: postId,
-    author: isAnonymous ? "Anonymous" : (namedAuthor?.username ?? "RSS Bot"),
+    author: isAnonymous ? "Anonymous" : decodeBasicHtmlEntities(namedAuthor?.username ?? "RSS Bot"),
     handle: isAnonymous ? "@anonymous" : normalizeHandle(namedAuthor?.usertag ?? "@rssbot"),
     isAnonymous,
     caption,
@@ -1261,125 +1657,29 @@ async function fetchLedgerPostsFromApi(): Promise<FeedPost[]> {
   return uniquePosts(collected).sort((left, right) => right.createdAtMs - left.createdAtMs);
 }
 
-function googleApiFromWindow(): GoogleApi | null {
-  if (typeof window === "undefined") {
-    return null;
-  }
-  const maybeGoogle = (window as Window & { google?: GoogleApi }).google;
-  if (!maybeGoogle?.accounts?.oauth2?.initTokenClient) {
-    return null;
-  }
-  return maybeGoogle;
-}
-
-function loadGoogleIdentityScript(): Promise<void> {
-  if (typeof window === "undefined") {
-    return Promise.reject(new Error("Google sign-in requires a browser environment."));
-  }
-  if (googleApiFromWindow()) {
-    return Promise.resolve();
-  }
-  if (googleIdentityScriptPromise) {
-    return googleIdentityScriptPromise;
-  }
-
-  googleIdentityScriptPromise = new Promise<void>((resolve, reject) => {
-    const existing = document.querySelector<HTMLScriptElement>('script[src="https://accounts.google.com/gsi/client"]');
-    if (existing) {
-      if (googleApiFromWindow()) {
-        resolve();
-        return;
-      }
-      let finished = false;
-      const interval = window.setInterval(() => {
-        if (finished) {
-          return;
-        }
-        if (googleApiFromWindow()) {
-          finished = true;
-          window.clearInterval(interval);
-          window.clearTimeout(timeout);
-          resolve();
-        }
-      }, 50);
-      const timeout = window.setTimeout(() => {
-        if (finished) {
-          return;
-        }
-        finished = true;
-        window.clearInterval(interval);
-        reject(new Error("Google sign-in script load timed out."));
-      }, 6000);
-      existing.addEventListener(
-        "error",
-        () => {
-          if (finished) {
-            return;
-          }
-          finished = true;
-          window.clearInterval(interval);
-          window.clearTimeout(timeout);
-          reject(new Error("Failed to load Google sign-in script."));
-        },
-        { once: true }
-      );
-      return;
-    }
-
-    const script = document.createElement("script");
-    script.src = "https://accounts.google.com/gsi/client";
-    script.async = true;
-    script.defer = true;
-    script.onload = () => resolve();
-    script.onerror = () => reject(new Error("Failed to load Google sign-in script."));
-    document.head.appendChild(script);
-  }).catch((error) => {
-    googleIdentityScriptPromise = null;
-    throw error;
-  });
-
-  return googleIdentityScriptPromise;
-}
-
-async function requestGoogleAccessToken(clientId: string): Promise<string> {
-  await loadGoogleIdentityScript();
-  const googleApi = googleApiFromWindow();
-  if (!googleApi) {
-    throw new Error("Google sign-in did not initialize.");
-  }
-
-  return new Promise<string>((resolve, reject) => {
-    const tokenClient = googleApi.accounts.oauth2.initTokenClient({
-      client_id: clientId,
-      scope: "openid email profile",
-      callback: (response) => {
-        if (response.error) {
-          reject(new Error(response.error_description ?? response.error));
-          return;
-        }
-        if (!response.access_token) {
-          reject(new Error("No Google access token returned."));
-          return;
-        }
-        resolve(response.access_token);
-      }
-    });
-    tokenClient.requestAccessToken({ prompt: "select_account" });
-  });
-}
-
-function googleSignInErrorMessage(error: unknown): string {
+function passkeySignInErrorMessage(error: unknown): string {
   if (error instanceof ApiError && error.status === 429) {
-    return "Google sign-in is temporarily rate limited. Please retry in a moment.";
+    return "Passkey sign-in is temporarily rate limited. Please retry in a moment.";
+  }
+  if (error instanceof ApiError && error.code === "human_verification_failed") {
+    return "Anonymous human verification failed. Please retry.";
   }
   const message = error instanceof Error ? error.message : String(error);
-  if (message.includes("popup_closed_by_user")) {
-    return "Google sign-in was canceled.";
+  if (/cancel|not allowed|abort/i.test(message)) {
+    return "Passkey verification was canceled.";
   }
-  if (message.includes("access_denied")) {
-    return "Google sign-in was denied.";
+  if (/unsupported|not supported|webauthn/i.test(message)) {
+    return "This browser or device does not support passkeys.";
   }
-  return "Google sign-in failed. Please try again.";
+  return "Passkey sign-in failed. Please try again.";
+}
+
+function browserSupportsPasskeySignIn(): boolean {
+  try {
+    return browserSupportsWebAuthn();
+  } catch {
+    return false;
+  }
 }
 
 function isUnauthorizedApiError(error: unknown): boolean {
@@ -1586,6 +1886,7 @@ function preferredTheme(): ThemeMode {
 
 export default function App() {
   const initialLinkedPostId = preferredLinkedPostId();
+  const initialPairingApprovalRequest = pairingApprovalFromLocation();
   const [themeMode, setThemeMode] = useState<ThemeMode>(preferredTheme);
   const [recoveryPromptRequest, setRecoveryPromptRequest] = useState<RecoveryPassphrasePromptRequest | null>(null);
   const [recoveryPromptValue, setRecoveryPromptValue] = useState<string>("");
@@ -1594,17 +1895,24 @@ export default function App() {
   const [isSignedIn, setIsSignedIn] = useState<boolean>(() => readSignedIn() || readSignedInProfile() !== null);
   const [signedInProfile, setSignedInProfile] = useState<StoredAuthProfile | null>(readSignedInProfile);
   const [authStatusMessage, setAuthStatusMessage] = useState<string | null>(null);
+  const [guestDeviceVerifiedAtMs, setGuestDeviceVerifiedAtMs] = useState<number>(readGuestDeviceVerifiedAtMs);
+  const [guestPasskeyPromptOpen, setGuestPasskeyPromptOpen] = useState(false);
+  const [guestPasskeyBusy, setGuestPasskeyBusy] = useState(false);
   const [activeView, setActiveView] = useState<"feed" | "profile">("feed");
   const [activeProfileHandle, setActiveProfileHandle] = useState<string>("@guest");
   const [activeProfileName, setActiveProfileName] = useState<string>("Guest");
   const [activeTab, setActiveTab] = useState<FeedTab>(initialLinkedPostId ? "world" : preferredFeedTab);
   const [linkedPostId] = useState<string | null>(initialLinkedPostId);
+  const [pairingApprovalRequest, setPairingApprovalRequest] = useState<DevicePairingApprovalRequest | null>(
+    initialPairingApprovalRequest
+  );
+  const [pairingApprovalBusy, setPairingApprovalBusy] = useState(false);
+  const [pairingApprovalMessage, setPairingApprovalMessage] = useState<string | null>(null);
   const [hasScrolledToLinkedPost, setHasScrolledToLinkedPost] = useState(false);
   const [nativeLanguage, setNativeLanguage] = useState<string>(preferredNativeLanguage);
   const [timeWindow, setTimeWindow] = useState<TimeWindow>(preferredTimeWindow);
   const [feedSortMode, setFeedSortMode] = useState<FeedSortMode>("likes");
   const [timeWindowSnapshotMs, setTimeWindowSnapshotMs] = useState<number>(() => Date.now());
-  const [savedOnly, setSavedOnly] = useState(false);
   const [countryFilter, setCountryFilter] = useState<string>("all");
   const [allCountriesMode, setAllCountriesMode] = useState(true);
   const [isWorldMapExpanded, setIsWorldMapExpanded] = useState(false);
@@ -1617,19 +1925,40 @@ export default function App() {
   const [profileEditorDraft, setProfileEditorDraft] = useState<ProfileEditorDraft | null>(null);
   const [profileEditorBusy, setProfileEditorBusy] = useState(false);
   const [profileEditorMessage, setProfileEditorMessage] = useState<string | null>(null);
+  const [profileEditorMessageTone, setProfileEditorMessageTone] = useState<ProfileSaveMessageTone>("neutral");
+  const [pendingHandleChangeSave, setPendingHandleChangeSave] = useState<PendingHandleChangeSave | null>(null);
   const [postInteractions, setPostInteractions] = useState<Record<string, PostInteractionSnapshot>>(readPostInteractions);
   const [rankingInteractionSnapshot] = useState<Record<string, PostInteractionSnapshot>>(readPostInteractions);
   const [seenPostHashes, setSeenPostHashes] = useState<Set<string>>(readSeenPostHashes);
   const [posts, setPosts] = useState<FeedPost[]>(readPersistedPosts);
   const [queuedPosts, setQueuedPosts] = useState<FeedPost[]>([]);
+  const [sitePulseTone, setSitePulseTone] = useState<DotTone | null>(null);
+  const [showBackToTop, setShowBackToTop] = useState(false);
+  const [fullscreenPostId, setFullscreenPostId] = useState<string | null>(initialLinkedPostId);
   const loadMoreRef = useRef<HTMLDivElement | null>(null);
+  const dotButtonRefs = useRef<Record<DotTone, HTMLButtonElement | null>>({
+    red: null,
+    green: null,
+    blue: null
+  });
+  const dotPulseTimeoutsRef = useRef<Record<DotTone, number | null>>({
+    red: null,
+    green: null,
+    blue: null
+  });
+  const dotAudioContextRef = useRef<AudioContext | null>(null);
+  const dotAudioGainRef = useRef<GainNode | null>(null);
+  const sitePulseTimeoutRef = useRef<number | null>(null);
   const recoveryPromptInputRef = useRef<HTMLInputElement | null>(null);
   const recoveryPromptResolverRef = useRef<{
     resolve: (value: string) => void;
     reject: (error: Error) => void;
   } | null>(null);
-  const googleClientId = (import.meta.env.VITE_GOOGLE_CLIENT_ID ?? "").trim();
-  const googleSignInEnabled = googleClientId.length > 0;
+  const passkeySignInEnabled = useMemo(() => browserSupportsPasskeySignIn(), []);
+  const setProfileEditorStatus = useCallback((message: string | null, tone: ProfileSaveMessageTone = "neutral") => {
+    setProfileEditorMessage(message);
+    setProfileEditorMessageTone(tone);
+  }, []);
   const viewerHandle = isSignedIn
     ? ownServerProfile?.handle ?? fallbackHandleFromAuthProfile(signedInProfile)
     : "@guest";
@@ -1643,6 +1972,21 @@ export default function App() {
   const recoveryPromptContent = recoveryPromptRequest
     ? recoveryPassphrasePromptCopy(recoveryPromptRequest.mode)
     : null;
+  const hydratePrivateFollowingHandles = useCallback(async () => {
+    try {
+      const payload = await readPrivateProfilePayload();
+      if (!payload) {
+        return;
+      }
+      const privateFollowingHandles = privateFollowingHandlesFromPayload(payload);
+      if (privateFollowingHandles.length === 0) {
+        return;
+      }
+      setFollowedHandles((current) => new Set([...current, ...privateFollowingHandles]));
+    } catch {
+      // Keep sign-in/session hydration resilient if private block is absent or cannot be decrypted yet.
+    }
+  }, []);
 
   const requestRecoveryPrompt = useCallback(
     (request: RecoveryPassphrasePromptRequest): Promise<string> =>
@@ -1677,14 +2021,20 @@ export default function App() {
 
   const clearSignedInState = useCallback((nextAuthMessage: string | null = null) => {
     clearCachedMasterKey();
+    const nowMs = Date.now();
     setIsSignedIn(false);
     setSignedInProfile(null);
     setOwnServerProfile(null);
     setProfileEditorDraft(null);
     setProfileEditorMessage(null);
+    setProfileEditorMessageTone("neutral");
     setProfileEditorBusy(false);
+    setGuestPasskeyPromptOpen(false);
+    setGuestPasskeyBusy(false);
+    setGuestDeviceVerifiedAtMs(nowMs);
     setFollowedHandles(readFollowedHandles());
     window.localStorage.setItem(SIGNED_IN_KEY, "0");
+    writeGuestDeviceVerifiedAtMs(nowMs);
     writeSignedInProfile(null);
     writeOwnServerProfileCache(null);
     setAuthStatusMessage(nextAuthMessage);
@@ -1696,10 +2046,164 @@ export default function App() {
     window.localStorage.setItem("pawmaq-theme", nextTheme);
   }
 
+  function ensureDotAudioContext(): AudioContext | null {
+    if (typeof window === "undefined") {
+      return null;
+    }
+    const AudioCtor = window.AudioContext;
+    if (!AudioCtor) {
+      return null;
+    }
+    if (!dotAudioContextRef.current) {
+      const context = new AudioCtor();
+      const gain = context.createGain();
+      gain.gain.value = 0.14;
+      gain.connect(context.destination);
+      dotAudioContextRef.current = context;
+      dotAudioGainRef.current = gain;
+    }
+    const context = dotAudioContextRef.current;
+    if (!context) {
+      return null;
+    }
+    if (context.state === "suspended") {
+      void context.resume().catch(() => {
+        // Keep dot animation interactive even if audio resume fails.
+      });
+    }
+    return context;
+  }
+
+  function playDotSound(tone: DotTone) {
+    const context = ensureDotAudioContext();
+    const outputGain = dotAudioGainRef.current;
+    if (!context || !outputGain) {
+      return;
+    }
+
+    const baseFrequency = tone === "red" ? 430 : tone === "green" ? 560 : 690;
+    const now = context.currentTime;
+
+    const bodyGain = context.createGain();
+    bodyGain.gain.setValueAtTime(0.0001, now);
+    bodyGain.gain.exponentialRampToValueAtTime(0.26, now + 0.012);
+    bodyGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.19);
+    bodyGain.connect(outputGain);
+
+    const bodyOsc = context.createOscillator();
+    bodyOsc.type = "triangle";
+    bodyOsc.frequency.setValueAtTime(baseFrequency, now);
+    bodyOsc.frequency.exponentialRampToValueAtTime(baseFrequency * 1.22, now + 0.18);
+    bodyOsc.connect(bodyGain);
+    bodyOsc.start(now);
+    bodyOsc.stop(now + 0.2);
+
+    const sparkleGain = context.createGain();
+    sparkleGain.gain.setValueAtTime(0.0001, now + 0.035);
+    sparkleGain.gain.exponentialRampToValueAtTime(0.14, now + 0.055);
+    sparkleGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.14);
+    sparkleGain.connect(outputGain);
+
+    const sparkleOsc = context.createOscillator();
+    sparkleOsc.type = "sine";
+    sparkleOsc.frequency.setValueAtTime(baseFrequency * 1.9, now + 0.03);
+    sparkleOsc.frequency.exponentialRampToValueAtTime(baseFrequency * 2.7, now + 0.13);
+    sparkleOsc.connect(sparkleGain);
+    sparkleOsc.start(now + 0.03);
+    sparkleOsc.stop(now + 0.15);
+  }
+
+  function pulseDot(tone: DotTone) {
+    const button = dotButtonRefs.current[tone];
+    if (!button) {
+      return;
+    }
+    const existingTimeout = dotPulseTimeoutsRef.current[tone];
+    if (typeof existingTimeout === "number") {
+      window.clearTimeout(existingTimeout);
+      dotPulseTimeoutsRef.current[tone] = null;
+    }
+    button.classList.remove("is-popping");
+    void button.offsetWidth;
+    button.classList.add("is-popping");
+    dotPulseTimeoutsRef.current[tone] = window.setTimeout(() => {
+      button.classList.remove("is-popping");
+      dotPulseTimeoutsRef.current[tone] = null;
+    }, 900);
+  }
+
+  function handleDotClick(tone: DotTone) {
+    pulseDot(tone);
+    const applyTone = () => {
+      setSitePulseTone(tone);
+      sitePulseTimeoutRef.current = window.setTimeout(() => {
+        setSitePulseTone(null);
+        sitePulseTimeoutRef.current = null;
+      }, 3200);
+    };
+    if (sitePulseTimeoutRef.current !== null) {
+      window.clearTimeout(sitePulseTimeoutRef.current);
+      sitePulseTimeoutRef.current = null;
+    }
+    // Force retrigger when the same color is clicked repeatedly.
+    setSitePulseTone(null);
+    window.requestAnimationFrame(applyTone);
+  }
+
   function updateNativeLanguage(language: string) {
     setNativeLanguage(language);
     window.localStorage.setItem("pawmaq-native-language", language);
   }
+
+  const backToTop = useCallback(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    window.scrollTo({ top: 0, left: 0, behavior: "smooth" });
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const syncFromUrl = () => {
+      setFullscreenPostId(linkedPostIdFromLocation());
+      setPairingApprovalRequest(pairingApprovalFromLocation());
+    };
+    window.addEventListener("popstate", syncFromUrl);
+    return () => {
+      window.removeEventListener("popstate", syncFromUrl);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof document === "undefined") {
+      return;
+    }
+    if (!fullscreenPostId) {
+      return;
+    }
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [fullscreenPostId]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !fullscreenPostId) {
+      return;
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        closePostFullscreen();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [fullscreenPostId]);
 
   useEffect(() => {
     setRecoveryPassphrasePromptHandler(requestRecoveryPrompt);
@@ -1711,6 +2215,46 @@ export default function App() {
       }
     };
   }, [requestRecoveryPrompt]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const thresholdPx = 900;
+    const updateVisibility = () => {
+      const nextVisible = window.scrollY > thresholdPx;
+      setShowBackToTop((current) => (current === nextVisible ? current : nextVisible));
+    };
+    updateVisibility();
+    window.addEventListener("scroll", updateVisibility, { passive: true });
+    return () => {
+      window.removeEventListener("scroll", updateVisibility);
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      for (const tone of ["red", "green", "blue"] as const) {
+        const timeoutId = dotPulseTimeoutsRef.current[tone];
+        if (typeof timeoutId === "number") {
+          window.clearTimeout(timeoutId);
+          dotPulseTimeoutsRef.current[tone] = null;
+        }
+      }
+      const context = dotAudioContextRef.current;
+      dotAudioContextRef.current = null;
+      dotAudioGainRef.current = null;
+      if (sitePulseTimeoutRef.current !== null) {
+        window.clearTimeout(sitePulseTimeoutRef.current);
+        sitePulseTimeoutRef.current = null;
+      }
+      if (context) {
+        void context.close().catch(() => {
+          // Ignore close failures during unmount.
+        });
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (!recoveryPromptRequest) {
@@ -1741,39 +2285,64 @@ export default function App() {
     closeRecoveryPrompt(new Error("Recovery passphrase canceled."));
   }
 
-  async function signInWithGoogle(): Promise<boolean> {
-    if (!googleSignInEnabled) {
-      setAuthStatusMessage("Google sign-in is not configured. Add VITE_GOOGLE_CLIENT_ID.");
+  const applySignedInSession = useCallback((profile: ServerLedgerProfile, provider: StoredAuthProfile["provider"]) => {
+    const authProfile: StoredAuthProfile = {
+      provider,
+      name: profile.name
+    };
+    setSignedInProfile(authProfile);
+    setOwnServerProfile(profile);
+    setProfileEditorDraft(draftFromServerProfile(profile));
+    setProfileCacheByHandle((current) => ({
+      ...current,
+      [profile.handle]: profile
+    }));
+    setFollowedHandles(new Set(profile.followingHandles));
+    setIsSignedIn(true);
+    setGuestPasskeyPromptOpen(false);
+    window.localStorage.setItem(SIGNED_IN_KEY, "1");
+    writeSignedInProfile(authProfile);
+  }, []);
+
+  async function completePasskeyRegistrationFlow(guest: boolean): Promise<AuthSessionResponse> {
+    const registrationChallenge = await requestHumanChallenge("passkey_register");
+    const registrationProof = await solveHumanChallenge(registrationChallenge);
+    const registrationStart = await beginPasskeyRegistration(registrationProof);
+    const registrationResponse = await startRegistration({
+      optionsJSON: registrationStart.options
+    });
+    return completePasskeyRegistration(registrationStart.challengeToken, registrationResponse, guest);
+  }
+
+  async function completePasskeyAuthenticationFlow(guest: boolean): Promise<AuthSessionResponse> {
+    const authChallenge = await requestHumanChallenge("passkey_auth");
+    const authProof = await solveHumanChallenge(authChallenge);
+    const authStart = await beginPasskeyAuthentication(authProof);
+    const authResponse = await startAuthentication({
+      optionsJSON: authStart.options
+    });
+    return completePasskeyAuthentication(authStart.challengeToken, authResponse, guest);
+  }
+
+  async function signInWithPasskey(): Promise<boolean> {
+    if (!passkeySignInEnabled) {
+      setAuthStatusMessage("Passkeys are not supported in this browser.");
       return false;
     }
 
     let sessionCreated = false;
     try {
       setAuthStatusMessage(null);
+      setAuthStatusMessage("Running anonymous human verification...");
       clearCachedMasterKey();
-      const accessToken = await requestGoogleAccessToken(googleClientId);
-      const session = await createGoogleSession(accessToken, googleClientId);
+      const session = await completePasskeyAuthenticationFlow(false);
       sessionCreated = true;
-      const syncedProfile = session.profile;
-      const authProfile: StoredAuthProfile = {
-        provider: "google",
-        name: syncedProfile.name
-      };
-      setSignedInProfile(authProfile);
-      setOwnServerProfile(syncedProfile);
-      setProfileEditorDraft(draftFromServerProfile(syncedProfile));
-      setProfileCacheByHandle((current) => ({
-        ...current,
-        [syncedProfile.handle]: syncedProfile
-      }));
-      setFollowedHandles(new Set(syncedProfile.followingHandles));
-      setIsSignedIn(true);
-      window.localStorage.setItem(SIGNED_IN_KEY, "1");
-      writeSignedInProfile(authProfile);
+      applySignedInSession(session.profile, "passkey");
       void ensureAccountMasterKey().catch(() => {
         // Keep sign-in successful even if private-key setup is postponed or canceled.
       });
-      setAuthStatusMessage(`Signed in as ${syncedProfile.name}.`);
+      void hydratePrivateFollowingHandles();
+      setAuthStatusMessage(`Signed in as ${session.profile.name}.`);
       return true;
     } catch (error) {
       if (sessionCreated) {
@@ -1784,11 +2353,180 @@ export default function App() {
       if (isRecoveryPhraseFlowError(error)) {
         clearSignedInState("Sign-in canceled. Recovery phrase setup is required to finish signing in.");
       } else if (isUnauthorizedApiError(error)) {
-        clearSignedInState("Google session verification failed. Please try signing in again.");
+        clearSignedInState("Passkey session verification failed. Please try signing in again.");
       } else {
-        clearSignedInState(googleSignInErrorMessage(error));
+        clearSignedInState(passkeySignInErrorMessage(error));
       }
       return false;
+    }
+  }
+
+  async function verifyGuestWithPasskey(): Promise<boolean> {
+    if (!passkeySignInEnabled) {
+      setAuthStatusMessage("Passkeys are not supported in this browser.");
+      return false;
+    }
+    if (guestPasskeyBusy) {
+      return false;
+    }
+
+    setGuestPasskeyBusy(true);
+    try {
+      setAuthStatusMessage(null);
+      setAuthStatusMessage("Running anonymous human verification...");
+      await completePasskeyAuthenticationFlow(true);
+      const nowMs = Date.now();
+      setGuestDeviceVerifiedAtMs(nowMs);
+      writeGuestDeviceVerifiedAtMs(nowMs);
+      setGuestPasskeyPromptOpen(false);
+      setAuthStatusMessage("Guest device verification complete. Next check in 15 minutes.");
+      return true;
+    } catch (error) {
+      setAuthStatusMessage(passkeySignInErrorMessage(error));
+      return false;
+    } finally {
+      setGuestPasskeyBusy(false);
+    }
+  }
+
+  async function createPasskeyOnDevice(): Promise<boolean> {
+    if (!passkeySignInEnabled) {
+      setAuthStatusMessage("Passkeys are not supported in this browser.");
+      return false;
+    }
+
+    let sessionCreated = false;
+    try {
+      setAuthStatusMessage(null);
+      setAuthStatusMessage("Creating a passkey on this device...");
+      clearCachedMasterKey();
+      const session = await completePasskeyRegistrationFlow(false);
+      sessionCreated = true;
+      applySignedInSession(session.profile, "passkey");
+      void ensureAccountMasterKey().catch(() => {
+        // Keep sign-in successful even if private-key setup is postponed or canceled.
+      });
+      void hydratePrivateFollowingHandles();
+      setAuthStatusMessage(`Signed in as ${session.profile.name}.`);
+      return true;
+    } catch (error) {
+      if (sessionCreated) {
+        void signOutSession().catch(() => {
+          // Keep local cancellation responsive even if server sign-out fails.
+        });
+      }
+      if (isRecoveryPhraseFlowError(error)) {
+        clearSignedInState("Sign-in canceled. Recovery phrase setup is required to finish signing in.");
+      } else if (isUnauthorizedApiError(error)) {
+        clearSignedInState("Passkey session verification failed. Please try signing in again.");
+      } else {
+        clearSignedInState(passkeySignInErrorMessage(error));
+      }
+      return false;
+    }
+  }
+
+  async function continueAnonymously(): Promise<boolean> {
+    const signedIn = await signInWithPasskey();
+    if (signedIn) {
+      return true;
+    }
+    return createPasskeyOnDevice();
+  }
+
+  async function startDevicePairingForQr(intent: DevicePairingIntent): Promise<{
+    pairingId: string;
+    approvalSecret: string;
+    pollSecret: string;
+    expiresAtMs: string;
+  } | null> {
+    try {
+      const pairing = await startDevicePairing(intent);
+      return {
+        pairingId: pairing.pairingId,
+        approvalSecret: pairing.approvalSecret,
+        pollSecret: pairing.pollSecret,
+        expiresAtMs: pairing.expiresAtMs
+      };
+    } catch (error) {
+      setAuthStatusMessage(error instanceof Error ? error.message : "Unable to start device pairing.");
+      return null;
+    }
+  }
+
+  async function pollDevicePairingForQr(
+    pairingId: string,
+    pollSecret: string
+  ): Promise<{ status: "pending" | "approved" | "consumed" | "expired"; handoffToken?: string }> {
+    try {
+      return await pollDevicePairing(pairingId, pollSecret);
+    } catch {
+      return { status: "pending" };
+    }
+  }
+
+  async function completeDevicePairingForQr(
+    pairingId: string,
+    pollSecret: string,
+    handoffToken: string
+  ): Promise<boolean> {
+    try {
+      const session = await completeDevicePairing(pairingId, pollSecret, handoffToken);
+      applySignedInSession(session.profile, "passkey");
+      void ensureAccountMasterKey().catch(() => {
+        // Keep sign-in successful even if private-key setup is postponed or canceled.
+      });
+      void hydratePrivateFollowingHandles();
+      setAuthStatusMessage(`Signed in as ${session.profile.name}.`);
+      return true;
+    } catch (error) {
+      setAuthStatusMessage(error instanceof Error ? error.message : "Unable to complete device pairing.");
+      return false;
+    }
+  }
+
+  function clearPairingApprovalFromUrl() {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const url = new URL(window.location.href);
+    url.searchParams.delete("linkDevice");
+    url.searchParams.delete("pairingId");
+    url.searchParams.delete("approvalSecret");
+    const query = url.searchParams.toString();
+    const nextPath = `${url.pathname}${query ? `?${query}` : ""}${url.hash}`;
+    window.history.replaceState({}, "", nextPath || "/");
+  }
+
+  function dismissPairingApproval() {
+    clearPairingApprovalFromUrl();
+    setPairingApprovalRequest(null);
+    setPairingApprovalMessage(null);
+  }
+
+  async function approvePairingFromLink(): Promise<void> {
+    if (!pairingApprovalRequest || pairingApprovalBusy) {
+      return;
+    }
+    if (!isSignedIn) {
+      setPairingApprovalMessage("Sign in on this phone first, then approve device linking.");
+      return;
+    }
+    setPairingApprovalBusy(true);
+    try {
+      setPairingApprovalMessage("Confirm your identity on this phone...");
+      const reverifiedSession = await completePasskeyAuthenticationFlow(false);
+      applySignedInSession(reverifiedSession.profile, "passkey");
+      setPairingApprovalMessage("Identity confirmed. Approving device link...");
+      await approveDevicePairing(pairingApprovalRequest.pairingId, pairingApprovalRequest.approvalSecret);
+      setPairingApprovalMessage("Device approved. You can return to your other device now.");
+      window.setTimeout(() => {
+        dismissPairingApproval();
+      }, 1200);
+    } catch (error) {
+      setPairingApprovalMessage(error instanceof Error ? error.message : "Unable to approve device linking.");
+    } finally {
+      setPairingApprovalBusy(false);
     }
   }
 
@@ -1828,6 +2566,30 @@ export default function App() {
 
   function openViewerProfile() {
     openProfile(viewerName, viewerHandle);
+  }
+
+  function openPostFullscreen(postId: string) {
+    setFullscreenPostId(postId);
+    if (typeof window === "undefined") {
+      return;
+    }
+    window.sessionStorage.setItem(SCROLL_TARGET_POST_KEY, postId);
+    const nextUrl = `/?postId=${encodeURIComponent(postId)}#post-${postId}`;
+    window.history.pushState({ postId }, "", nextUrl);
+  }
+
+  function closePostFullscreen() {
+    setFullscreenPostId(null);
+    if (typeof window === "undefined") {
+      return;
+    }
+    const url = new URL(window.location.href);
+    url.searchParams.delete("postId");
+    url.searchParams.delete("post");
+    url.hash = "";
+    const query = url.searchParams.toString();
+    const nextPath = `${url.pathname}${query.length > 0 ? `?${query}` : ""}`;
+    window.history.replaceState({}, "", nextPath || "/");
   }
 
   function recordProfileInteraction(postId: string, action: ProfilePostInteractionAction) {
@@ -1963,13 +2725,15 @@ export default function App() {
       const message = error instanceof Error ? error.message : "Unable to update follow right now.";
       setAuthStatusMessage(message);
       try {
-        const syncedProfile = await fetchSessionProfile();
-        setOwnServerProfile(syncedProfile);
-        setFollowedHandles(new Set(syncedProfile.followingHandles));
-        setProfileCacheByHandle((current) => ({
-          ...current,
-          [syncedProfile.handle]: syncedProfile
-        }));
+        const synced = await fetchSessionState();
+        if (!synced.guest) {
+          setOwnServerProfile(synced.profile);
+          setFollowedHandles(new Set(synced.profile.followingHandles));
+          setProfileCacheByHandle((current) => ({
+            ...current,
+            [synced.profile.handle]: synced.profile
+          }));
+        }
       } catch {
         // Ignore secondary sync failures and keep optimistic state.
       }
@@ -1985,21 +2749,21 @@ export default function App() {
           }
         : current
     );
-    setProfileEditorMessage(null);
+    setProfileEditorStatus(null, "neutral");
   }
 
-  async function saveOwnProfileEdits() {
-    if (!isSignedIn || !profileEditorDraft) {
-      return;
-    }
-
+  async function persistOwnProfileEdits(draft: ProfileEditorDraft, previousHandle: string, previousName: string) {
     setProfileEditorBusy(true);
-    setProfileEditorMessage(null);
-    const previousHandle = ownServerProfile?.handle ?? viewerHandle;
-    const previousName = ownServerProfile?.name ?? viewerName;
+    setProfileEditorStatus("Saving profile…", "neutral");
 
     try {
-      const savedProfile = await saveProfileLedger(profileEditorDraft);
+      const savedProfile = await saveProfileLedgerWithRetry(draft, (attempt, maxAttempts, retryInMs) => {
+        const retryInSeconds = Math.max(0.3, retryInMs / 1000);
+        setProfileEditorStatus(
+          `Temporary connection issue. Retrying save (${attempt}/${maxAttempts}) in ${retryInSeconds.toFixed(1)}s…`,
+          "warning"
+        );
+      });
       setOwnServerProfile(savedProfile);
       setProfileEditorDraft(draftFromServerProfile(savedProfile));
       setProfileCacheByHandle((current) => ({
@@ -2007,7 +2771,7 @@ export default function App() {
         [savedProfile.handle]: savedProfile
       }));
       setFollowedHandles(new Set(savedProfile.followingHandles));
-      setProfileEditorMessage("Profile saved.");
+      setProfileEditorStatus("Profile saved.", "success");
 
       if (previousHandle !== savedProfile.handle || previousName !== savedProfile.name) {
         setPosts((current) =>
@@ -2029,10 +2793,53 @@ export default function App() {
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to save profile right now.";
-      setProfileEditorMessage(message);
+      setProfileEditorStatus(message, "error");
     } finally {
       setProfileEditorBusy(false);
     }
+  }
+
+  function saveOwnProfileEdits() {
+    if (!isSignedIn || !profileEditorDraft || profileEditorBusy) {
+      return;
+    }
+
+    const previousHandle = ownServerProfile?.handle ?? viewerHandle;
+    const previousName = ownServerProfile?.name ?? viewerName;
+    const draft = {
+      ...profileEditorDraft
+    };
+    const draftHandleRaw = draft.handle.trim();
+    const draftHandleCandidate = draftHandleRaw.startsWith("@") ? draftHandleRaw : `@${draftHandleRaw}`;
+    let normalizedDraftHandle = draftHandleCandidate.toLowerCase();
+    try {
+      normalizedDraftHandle = normalizeHandle(draftHandleCandidate);
+    } catch {
+      // Keep API-side validation path for malformed handles.
+    }
+    if (normalizedDraftHandle !== previousHandle) {
+      setPendingHandleChangeSave({
+        draft,
+        previousHandle,
+        previousName
+      });
+      return;
+    }
+    void persistOwnProfileEdits(draft, previousHandle, previousName);
+  }
+
+  function cancelPendingHandleChangeSave() {
+    setPendingHandleChangeSave(null);
+    setProfileEditorStatus("Handle update canceled.", "neutral");
+  }
+
+  function confirmPendingHandleChangeSave() {
+    if (!pendingHandleChangeSave || profileEditorBusy) {
+      return;
+    }
+    const pending = pendingHandleChangeSave;
+    setPendingHandleChangeSave(null);
+    void persistOwnProfileEdits(pending.draft, pending.previousHandle, pending.previousName);
   }
 
   function publishPost(payload: {
@@ -2136,6 +2943,13 @@ export default function App() {
     if (nextTab === activeTab) {
       return;
     }
+    if (nextTab === "world") {
+      // Entering World should default to a broad view so imported posts are visible immediately.
+      setCountryFilter("all");
+      setAllCountriesMode(true);
+      setWorldFilterMode("all");
+      setIsWorldMapExpanded(false);
+    }
     if (activeTab === "world" && nextTab === "following" && typeof window !== "undefined") {
       window.scrollTo({ top: 0, left: 0, behavior: "auto" });
     }
@@ -2223,21 +3037,21 @@ export default function App() {
     const filteredByTime = posts.filter((post) =>
       isPostInTimeWindow(post, timeWindow, timeWindowSnapshotMs)
     );
-
-    const maybeSavedFiltered = savedOnly
-      ? filteredByTime.filter((post) => savedPostIds.has(post.id))
-      : filteredByTime;
+    const savedTabFiltered =
+      activeTab === "saved"
+        ? filteredByTime.filter((post) => savedPostIds.has(post.id))
+        : filteredByTime;
     const maybeCountryFiltered =
       activeTab === "world" && countryFilter !== "all"
-        ? maybeSavedFiltered.filter((post) => post.countryCode === countryFilter)
-        : maybeSavedFiltered;
+        ? savedTabFiltered.filter((post) => post.countryCode === countryFilter)
+        : savedTabFiltered;
 
     let basePosts: FeedPost[];
     if (activeTab === "following") {
-      const followedOnly = maybeCountryFiltered.filter(
-        (post) => followingHandles.has(post.handle) || post.handle === viewerHandle
-      );
-      basePosts = followedOnly.length > 0 ? followedOnly : maybeCountryFiltered;
+      const followedOnly = maybeCountryFiltered.filter((post) => followingHandles.has(post.handle));
+      basePosts = followedOnly;
+    } else if (activeTab === "saved") {
+      basePosts = savedTabFiltered;
     } else {
       basePosts = maybeCountryFiltered;
     }
@@ -2279,7 +3093,6 @@ export default function App() {
     feedSortMode,
     timeWindowSnapshotMs,
     linkedPostId,
-    savedOnly,
     countryFilter,
     savedPostIds,
     rankingInteractionSnapshot,
@@ -2294,13 +3107,14 @@ export default function App() {
 
   const feedContextKey = useMemo(
     () =>
-      `${activeTab}|${timeWindow}|${feedSortMode}|${timeWindowSnapshotMs}|${savedOnly ? "saved" : "all"}|${activeTab === "world" ? countryFilter : "all"}`,
-    [activeTab, timeWindow, feedSortMode, timeWindowSnapshotMs, savedOnly, countryFilter]
+      `${activeTab}|${timeWindow}|${feedSortMode}|${timeWindowSnapshotMs}|${activeTab === "world" ? countryFilter : "all"}`,
+    [activeTab, timeWindow, feedSortMode, timeWindowSnapshotMs, countryFilter]
   );
 
   const loadMorePosts = useCallback(() => {
     setQueuedPosts((current) => {
       const currentIds = new Set(current.map((post) => post.id));
+      const isSavedTab = activeTab === "saved";
       const unseenCandidates = rankedCandidates.filter((post) => {
         if (currentIds.has(post.id)) {
           return false;
@@ -2308,7 +3122,7 @@ export default function App() {
         if (linkedPostId && post.id === linkedPostId) {
           return true;
         }
-        if (savedOnly) {
+        if (isSavedTab) {
           return true;
         }
         return !seenPostHashes.has(postIdentifierHash(post));
@@ -2330,7 +3144,7 @@ export default function App() {
         }
       }
 
-      if (nextBatch.length > 0 && !savedOnly) {
+      if (nextBatch.length > 0 && !isSavedTab) {
         setSeenPostHashes((existing) => {
           const next = new Set(existing);
           for (const post of nextBatch) {
@@ -2344,7 +3158,7 @@ export default function App() {
 
       return [...current, ...nextBatch];
     });
-  }, [rankedCandidates, linkedPostId, seenPostHashes, savedOnly, isSignedIn]);
+  }, [activeTab, rankedCandidates, linkedPostId, seenPostHashes, isSignedIn]);
 
   useEffect(() => {
     setQueuedPosts([]);
@@ -2365,7 +3179,6 @@ export default function App() {
     setHasScrolledToLinkedPost(false);
     setActiveView("feed");
     setActiveTab("world");
-    setSavedOnly(false);
     setCountryFilter("all");
     setAllCountriesMode(true);
     setWorldFilterMode("all");
@@ -2489,6 +3302,9 @@ export default function App() {
     if (!sessionHydrated || !isSignedIn || !ownServerProfile) {
       return;
     }
+    const followingHandlesList = normalizeHandleList([...followedHandles]).sort((left, right) =>
+      left.localeCompare(right)
+    );
     const savedPostIdsList = [...savedPostIds].sort((left, right) => left.localeCompare(right));
     const payload = {
       schema: "v1",
@@ -2498,8 +3314,12 @@ export default function App() {
         feedSortMode,
         timeWindow,
         activeTab,
-        savedOnly,
+        savedOnly: activeTab === "saved",
+        followingHandles: followingHandlesList,
         savedPostIds: savedPostIdsList
+      },
+      privateSocialGraph: {
+        followingHandles: followingHandlesList
       },
       interactions: {
         savedPostIds: savedPostIdsList
@@ -2516,7 +3336,7 @@ export default function App() {
     feedSortMode,
     timeWindow,
     activeTab,
-    savedOnly,
+    followedHandles,
     savedPostIds
   ]);
 
@@ -2526,6 +3346,28 @@ export default function App() {
     }
     window.localStorage.setItem(FEED_TAB_STORAGE_KEY, activeTab);
   }, [activeTab]);
+
+  useEffect(() => {
+    writeGuestDeviceVerifiedAtMs(guestDeviceVerifiedAtMs);
+  }, [guestDeviceVerifiedAtMs]);
+
+  useEffect(() => {
+    if (!sessionHydrated || isSignedIn || !passkeySignInEnabled) {
+      setGuestPasskeyPromptOpen(false);
+      return;
+    }
+    const check = () => {
+      const elapsedMs = Date.now() - guestDeviceVerifiedAtMs;
+      if (elapsedMs >= GUEST_PASSKEY_REAUTH_INTERVAL_MS) {
+        setGuestPasskeyPromptOpen(true);
+      }
+    };
+    check();
+    const intervalId = window.setInterval(check, 15_000);
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [sessionHydrated, isSignedIn, passkeySignInEnabled, guestDeviceVerifiedAtMs]);
 
   useEffect(() => {
     const sentinel = loadMoreRef.current;
@@ -2549,28 +3391,25 @@ export default function App() {
 
     void (async () => {
       try {
-        const profile = await fetchSessionProfile();
+        const session = await fetchSessionState();
         if (isCancelled) {
           return;
         }
-        const authProfile: StoredAuthProfile = {
-          provider: "google",
-          name: profile.name
-        };
-        setIsSignedIn(true);
-        setSignedInProfile(authProfile);
-        setOwnServerProfile(profile);
-        setProfileEditorDraft((current) => current ?? draftFromServerProfile(profile));
-        setProfileCacheByHandle((current) => ({
-          ...current,
-          [profile.handle]: profile
-        }));
-        setFollowedHandles(new Set(profile.followingHandles));
-        window.localStorage.setItem(SIGNED_IN_KEY, "1");
-        writeSignedInProfile(authProfile);
-        void ensureAccountMasterKey().catch(() => {
-          // Keep session restoration resilient if passphrase entry is skipped.
-        });
+        if (session.guest === true) {
+          setIsSignedIn(false);
+          setSignedInProfile(null);
+          setOwnServerProfile(null);
+          setProfileEditorDraft(null);
+          window.localStorage.setItem(SIGNED_IN_KEY, "0");
+          writeSignedInProfile(null);
+        } else {
+          applySignedInSession(session.profile, "passkey");
+          setProfileEditorDraft((current) => current ?? draftFromServerProfile(session.profile));
+          void ensureAccountMasterKey().catch(() => {
+            // Keep session restoration resilient if passphrase entry is skipped.
+          });
+          void hydratePrivateFollowingHandles();
+        }
         setSessionHydrated(true);
       } catch (error) {
         if (isCancelled) {
@@ -2593,7 +3432,7 @@ export default function App() {
     return () => {
       isCancelled = true;
     };
-  }, [clearSignedInState]);
+  }, [applySignedInSession, clearSignedInState, hydratePrivateFollowingHandles]);
 
   useEffect(() => {
     if (!sessionHydrated || !isSignedIn) {
@@ -2603,14 +3442,18 @@ export default function App() {
     const intervalId = window.setInterval(() => {
       void (async () => {
         try {
-          const profile = await fetchSessionProfile();
+          const session = await fetchSessionState();
           if (canceled) {
             return;
           }
-          setOwnServerProfile(profile);
+          if (session.guest === true) {
+            clearSignedInState("Session expired. Please sign in again.");
+            return;
+          }
+          setOwnServerProfile(session.profile);
           setProfileCacheByHandle((current) => ({
             ...current,
-            [profile.handle]: profile
+            [session.profile.handle]: session.profile
           }));
         } catch (error) {
           if (canceled) {
@@ -2628,6 +3471,46 @@ export default function App() {
       window.clearInterval(intervalId);
     };
   }, [clearSignedInState, isSignedIn, sessionHydrated]);
+
+  useEffect(() => {
+    if (!isSignedIn || followedHandles.size === 0) {
+      return;
+    }
+    let canceled = false;
+    const missing = [...followedHandles].filter((handle) => !profileCacheByHandle[handle]);
+    if (missing.length === 0) {
+      return;
+    }
+    void (async () => {
+      const results = await Promise.all(
+        missing.map(async (handle) => {
+          try {
+            const profile = await fetchProfileByHandle(handle);
+            return profile;
+          } catch {
+            return null;
+          }
+        })
+      );
+      if (canceled) {
+        return;
+      }
+      const updates = results.filter((profile): profile is ServerLedgerProfile => Boolean(profile));
+      if (updates.length === 0) {
+        return;
+      }
+      setProfileCacheByHandle((current) => {
+        const next = { ...current };
+        for (const profile of updates) {
+          next[profile.handle] = profile;
+        }
+        return next;
+      });
+    })();
+    return () => {
+      canceled = true;
+    };
+  }, [isSignedIn, followedHandles, profileCacheByHandle]);
 
   useEffect(() => {
     if (!isSignedIn || !ownServerProfile) {
@@ -2694,6 +3577,22 @@ export default function App() {
       : activeProfileHandle);
   const activeProfileResolvedHandle = activeLedgerProfile?.handle ?? activeProfileHandle;
   const activeProfileIsFollowing = followedHandles.has(activeProfileResolvedHandle);
+  const activeProfileFollowingProfiles = useMemo<FollowingProfileSummary[]>(() => {
+    if (!activeProfileIsOwn) {
+      return [];
+    }
+    const handles = normalizeHandleList([...followedHandles]).sort((left, right) => left.localeCompare(right));
+    return handles.map((handle) => {
+      const profile = profileCacheByHandle[handle];
+      const latestPostFromHandle = posts.find((post) => !post.isAnonymous && post.handle === handle);
+      const fallbackName = handle.replace(/^@+/, "") || "member";
+      return {
+        handle,
+        name: profile?.name || latestPostFromHandle?.author || fallbackName,
+        avatarUrl: profile?.avatarUrl || undefined
+      };
+    });
+  }, [activeProfileIsOwn, followedHandles, profileCacheByHandle, posts]);
   const activeProfileFollowersCount = activeLedgerProfile
     ? activeLedgerProfile.followerCount
     : syntheticCountFromHandle(`${activeProfileHandle}:followers`, 200, 9800) +
@@ -2707,21 +3606,61 @@ export default function App() {
     : activeLedgerProfile?.bio ||
       `Follow ${activeProfileResolvedName} to keep their posts in your Following feed.`;
   const activeProfileLocation = activeLedgerProfile?.location || activeProfileLatestPost?.countryName || null;
+  const fullscreenPost = useMemo(
+    () =>
+      fullscreenPostId
+        ? posts.find((post) => post.id === fullscreenPostId) ??
+          visibleQueuedPosts.find((post) => post.id === fullscreenPostId) ??
+          activeProfilePosts.find((post) => post.id === fullscreenPostId) ??
+          null
+        : null,
+    [fullscreenPostId, posts, visibleQueuedPosts, activeProfilePosts]
+  );
   const activeProfileBannerUrl = activeLedgerProfile?.bannerUrl || activeProfileLatestPost?.posterUrl;
   const activeProfileAvatarUrl = activeLedgerProfile?.avatarUrl;
   const activeProfileUsername = activeLedgerProfile?.username || activeProfileResolvedName.toLowerCase();
 
   return (
-    <div className={`app-shell mode-${themeMode}`}>
+    <div className={`app-shell mode-${themeMode}${sitePulseTone ? ` is-rgb-${sitePulseTone}` : ""}`}>
       <header className="top-bar reveal">
         <div>
           <p className="top-bar__title">Pawmaq Feed</p>
-          <p className="top-bar__subtitle">Short posts and clips from the people and places you choose.</p>
+          <p className="top-bar__subtitle">Privacy first, anonymous open-source social media site</p>
         </div>
-        <div className="top-bar__center-dots" aria-hidden="true">
-          <span className="top-bar__dot top-bar__dot--red" />
-          <span className="top-bar__dot top-bar__dot--green" />
-          <span className="top-bar__dot top-bar__dot--blue" />
+        <div className="top-bar__center-dots" role="group" aria-label="Color controls">
+          <button
+            type="button"
+            className="top-bar__dot-button top-bar__dot-button--red"
+            aria-label="Red dot"
+            ref={(node) => {
+              dotButtonRefs.current.red = node;
+            }}
+            onClick={() => handleDotClick("red")}
+          >
+            <span className="top-bar__dot top-bar__dot--red" />
+          </button>
+          <button
+            type="button"
+            className="top-bar__dot-button top-bar__dot-button--green"
+            aria-label="Green dot"
+            ref={(node) => {
+              dotButtonRefs.current.green = node;
+            }}
+            onClick={() => handleDotClick("green")}
+          >
+            <span className="top-bar__dot top-bar__dot--green" />
+          </button>
+          <button
+            type="button"
+            className="top-bar__dot-button top-bar__dot-button--blue"
+            aria-label="Blue dot"
+            ref={(node) => {
+              dotButtonRefs.current.blue = node;
+            }}
+            onClick={() => handleDotClick("blue")}
+          >
+            <span className="top-bar__dot top-bar__dot--blue" />
+          </button>
         </div>
         <div className="top-bar__actions">
           <ThemeToggle mode={themeMode} onToggle={toggleTheme} />
@@ -2730,16 +3669,15 @@ export default function App() {
             isSignedIn={isSignedIn}
             signedInProfile={signedInProfile}
             onSignOut={signOut}
-            onSignInWithGoogle={signInWithGoogle}
-            googleSignInEnabled={googleSignInEnabled}
+            onSignInWithPasskey={signInWithPasskey}
+            onCreatePasskeyOnDevice={createPasskeyOnDevice}
+            onStartDevicePairing={startDevicePairingForQr}
+            onPollDevicePairing={pollDevicePairingForQr}
+            onCompleteDevicePairing={completeDevicePairingForQr}
+            passkeySignInEnabled={passkeySignInEnabled}
             authStatusMessage={authStatusMessage}
-            nativeLanguage={nativeLanguage}
-            onNativeLanguageChange={updateNativeLanguage}
-            feedSortMode={feedSortMode}
-            onFeedSortModeChange={setFeedSortMode}
             onOpenProfile={openViewerProfile}
             profileButtonLabel={viewerName}
-            savedCount={savedPostIds.size}
           />
         </div>
       </header>
@@ -2761,13 +3699,21 @@ export default function App() {
                 postsCount={Math.max(activeLedgerProfile?.posts.length ?? 0, activeProfilePosts.length)}
                 followersCount={activeProfileFollowersCount}
                 followingCount={activeProfileFollowingCount}
+                followingProfiles={activeProfileFollowingProfiles}
                 isOwnProfile={activeProfileIsOwn}
                 isFollowing={activeProfileIsFollowing}
                 onBackToFeed={() => setActiveView("feed")}
+                onSignOut={signOut}
                 onToggleFollow={() => void toggleFollowHandle(activeProfileResolvedHandle)}
+                onOpenFollowingProfile={(handle, name) => openProfile(name, handle)}
                 profileEditorDraft={activeProfileIsOwn ? profileEditorDraft : null}
                 profileEditorBusy={profileEditorBusy}
                 profileEditorMessage={profileEditorMessage}
+                profileEditorMessageTone={profileEditorMessageTone}
+                nativeLanguage={nativeLanguage}
+                onNativeLanguageChange={updateNativeLanguage}
+                feedSortMode={feedSortMode}
+                onFeedSortModeChange={setFeedSortMode}
                 onProfileFieldChange={(field, value) => updateProfileDraft(field, value)}
                 onSaveProfile={() => void saveOwnProfileEdits()}
               />
@@ -2782,10 +3728,12 @@ export default function App() {
                       nativeLanguage={nativeLanguage}
                       isSaved={savedPostIds.has(post.id)}
                       onToggleSave={toggleSavedPost}
+                      onOpenPost={openPostFullscreen}
                       isSignedIn={isSignedIn}
+                      onSignInWithPasskey={signInWithPasskey}
+                      onCreatePasskeyOnDevice={createPasskeyOnDevice}
+                      passkeySignInEnabled={passkeySignInEnabled}
                       viewerHandle={viewerHandle}
-                      isAuthorFollowed={followedHandles.has(post.handle)}
-                      onToggleFollowAuthor={toggleFollowHandle}
                       onOpenAuthorProfile={openProfile}
                       reactionState={postInteractions[post.id]?.reaction ?? null}
                       isReposted={postInteractions[post.id]?.reposted ?? false}
@@ -2827,21 +3775,15 @@ export default function App() {
                     </button>
                   ))}
                 </div>
-                <button
-                  type="button"
-                  className={savedOnly ? "feed-tools__chip feed-tools__chip--saved is-active" : "feed-tools__chip feed-tools__chip--saved"}
-                  onClick={() => setSavedOnly((current) => !current)}
-                >
-                  Saved Only
-                </button>
               </section>
 
               <VideoComposer
                 countries={worldSupportData}
                 onPublish={publishPost}
                 isSignedIn={isSignedIn}
-                onSignInWithGoogle={signInWithGoogle}
-                googleSignInEnabled={googleSignInEnabled}
+                onSignInWithPasskey={signInWithPasskey}
+                onCreatePasskeyOnDevice={createPasskeyOnDevice}
+                passkeySignInEnabled={passkeySignInEnabled}
               />
 
               {activeTab === "world" ? (
@@ -2930,10 +3872,12 @@ export default function App() {
                       nativeLanguage={nativeLanguage}
                       isSaved={savedPostIds.has(post.id)}
                       onToggleSave={toggleSavedPost}
+                      onOpenPost={openPostFullscreen}
                       isSignedIn={isSignedIn}
+                      onSignInWithPasskey={signInWithPasskey}
+                      onCreatePasskeyOnDevice={createPasskeyOnDevice}
+                      passkeySignInEnabled={passkeySignInEnabled}
                       viewerHandle={viewerHandle}
-                      isAuthorFollowed={followedHandles.has(post.handle)}
-                      onToggleFollowAuthor={toggleFollowHandle}
                       onOpenAuthorProfile={openProfile}
                       reactionState={postInteractions[post.id]?.reaction ?? null}
                       isReposted={postInteractions[post.id]?.reposted ?? false}
@@ -2952,6 +3896,181 @@ export default function App() {
 
         <RightRail />
       </div>
+
+      {fullscreenPost ? (
+        <section className="post-fullscreen" role="dialog" aria-modal="true" aria-label="Post fullscreen view">
+          <div className="post-fullscreen__shell">
+            <header className="post-fullscreen__topbar">
+              <button
+                type="button"
+                className="post-fullscreen__back"
+                onClick={closePostFullscreen}
+                aria-label="Back to feed"
+                title="Back"
+              >
+                ←
+              </button>
+              <h3 className="post-fullscreen__title">{fullscreenPost.author} {fullscreenPost.handle}</h3>
+            </header>
+            <div className="post-fullscreen__body">
+              <FeedCard
+                key={`fullscreen-${fullscreenPost.id}`}
+                post={fullscreenPost}
+                nativeLanguage={nativeLanguage}
+                isSaved={savedPostIds.has(fullscreenPost.id)}
+                onToggleSave={toggleSavedPost}
+                onOpenPost={openPostFullscreen}
+                forceCommentsOpen
+                disableHeaderOpen
+                isFullscreen
+                isSignedIn={isSignedIn}
+                onSignInWithPasskey={signInWithPasskey}
+                onCreatePasskeyOnDevice={createPasskeyOnDevice}
+                passkeySignInEnabled={passkeySignInEnabled}
+                viewerHandle={viewerHandle}
+                onOpenAuthorProfile={openProfile}
+                reactionState={postInteractions[fullscreenPost.id]?.reaction ?? null}
+                isReposted={postInteractions[fullscreenPost.id]?.reposted ?? false}
+                extraComments={postInteractions[fullscreenPost.id]?.extraComments ?? 0}
+                onReactionChange={updatePostReaction}
+                onToggleRepost={togglePostRepost}
+                onCommentCountIncrement={incrementPostComments}
+              />
+            </div>
+          </div>
+        </section>
+      ) : null}
+
+      {showBackToTop ? (
+        <button
+          type="button"
+          className="back-to-top-button"
+          onClick={backToTop}
+          aria-label="Back to top"
+          title="Back to top"
+        >
+          <span aria-hidden="true">↑</span>
+        </button>
+      ) : null}
+
+      {pairingApprovalRequest ? (
+        <div className="auth-modal-backdrop" role="presentation">
+          <section className="auth-modal panel" role="dialog" aria-modal="true" aria-label="Approve device linking">
+            <h4>Approve device linking</h4>
+            <p>
+              This request came from another device. Approval is phone-first: confirm with a fresh passkey check on this
+              phone, then the browser will be signed in.
+            </p>
+            {pairingApprovalMessage ? <p>{pairingApprovalMessage}</p> : null}
+            <div className="auth-modal__actions">
+              {!isSignedIn ? (
+                <>
+                  <button
+                    type="button"
+                    className="yt-button-secondary"
+                    onClick={() => void signInWithPasskey()}
+                    disabled={!passkeySignInEnabled || pairingApprovalBusy}
+                  >
+                    Sign in on this phone
+                  </button>
+                  <button
+                    type="button"
+                    className="yt-button-secondary"
+                    onClick={() => void createPasskeyOnDevice()}
+                    disabled={!passkeySignInEnabled || pairingApprovalBusy}
+                  >
+                    Create passkey on this device
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  className="yt-button-primary"
+                  onClick={() => void approvePairingFromLink()}
+                  disabled={pairingApprovalBusy}
+                >
+                  {pairingApprovalBusy ? "Approving..." : "Approve link"}
+                </button>
+              )}
+              <button
+                type="button"
+                className="yt-button-secondary"
+                onClick={dismissPairingApproval}
+                disabled={pairingApprovalBusy}
+              >
+                Cancel
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      {pendingHandleChangeSave ? (
+        <div className="auth-modal-backdrop" role="presentation">
+          <section className="auth-modal panel" role="dialog" aria-modal="true" aria-label="Confirm handle update">
+            <h4>Confirm handle change</h4>
+            <p>
+              Changing your @handle lets someone else claim your previous handle.
+            </p>
+            <div className="auth-modal__actions">
+              <button
+                type="button"
+                className="yt-button-secondary"
+                onClick={cancelPendingHandleChangeSave}
+                disabled={profileEditorBusy}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="yt-button-primary"
+                onClick={confirmPendingHandleChangeSave}
+                disabled={profileEditorBusy}
+              >
+                {profileEditorBusy ? "Saving..." : "Continue"}
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      {guestPasskeyPromptOpen ? (
+        <div className="auth-modal-backdrop" role="presentation">
+          <section className="auth-modal panel" role="dialog" aria-modal="true" aria-label="Device check required">
+            <h4>Quick device check</h4>
+            <p>
+              You are browsing as a guest. To continue in guest mode, complete a quick biometric or security-key check
+              every 15 minutes.
+            </p>
+            <div className="auth-modal__actions">
+              <button
+                type="button"
+                className="yt-button-secondary"
+                onClick={() => void continueAnonymously()}
+                disabled={!passkeySignInEnabled || guestPasskeyBusy}
+              >
+                Continue anonymously
+              </button>
+              <button
+                type="button"
+                className="yt-button-secondary"
+                onClick={() => void createPasskeyOnDevice()}
+                disabled={!passkeySignInEnabled || guestPasskeyBusy}
+              >
+                Create passkey on this device
+              </button>
+              <button
+                type="button"
+                className="yt-button-primary"
+                onClick={() => void verifyGuestWithPasskey()}
+                disabled={!passkeySignInEnabled || guestPasskeyBusy}
+              >
+                {guestPasskeyBusy ? "Checking device..." : "Verify device"}
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
 
       {recoveryPromptRequest && recoveryPromptContent ? (
         <div className="recovery-modal-backdrop" onClick={cancelRecoveryPrompt}>

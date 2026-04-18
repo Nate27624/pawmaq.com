@@ -1,6 +1,6 @@
 export type ThemeMode = "light" | "dark";
 
-export type FeedTab = "following" | "world";
+export type FeedTab = "saved" | "following" | "world";
 
 export interface FeedPost {
   id: string;

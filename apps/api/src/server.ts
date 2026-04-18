@@ -4,11 +4,13 @@ import helmet from "@fastify/helmet";
 import Fastify from "fastify";
 import type { AppEnv } from "./config/env.js";
 import { registerAuthRoutes } from "./modules/auth/routes.js";
+import { PasskeyService } from "./modules/auth/passkey-service.js";
 import { AuthSessionService } from "./modules/auth/service.js";
 import { registerHealthRoutes } from "./modules/health/routes.js";
 import { PreLedgerQueueService } from "./modules/intake/pre-ledger-queue.js";
 import { registerLedgerRoutes } from "./modules/ledger/routes.js";
 import { PostPopularityLedgerService } from "./modules/ledger/service.js";
+import { registerLinkRoutes } from "./modules/links/routes.js";
 import { registerMediaRoutes } from "./modules/media/routes.js";
 import { registerModerationRoutes } from "./modules/moderation/routes.js";
 import { registerProfileRoutes } from "./modules/profiles/routes.js";
@@ -39,14 +41,16 @@ function isLocalDevOrigin(origin: string): boolean {
 }
 
 export async function buildApp(env: AppEnv) {
-  if (env.NODE_ENV === "production" && env.GOOGLE_OAUTH_CLIENT_IDS.trim().length === 0) {
-    throw new Error("GOOGLE_OAUTH_CLIENT_IDS is required in production.");
-  }
   if (env.NODE_ENV === "production" && env.AUTH_SESSION_STORE !== "redis") {
     throw new Error("AUTH_SESSION_STORE must be 'redis' in production.");
   }
   if (env.NODE_ENV === "production" && !env.REDIS_URL.trim()) {
     throw new Error("REDIS_URL is required in production.");
+  }
+  const cookieDomain = env.AUTH_COOKIE_DOMAIN.trim();
+  const cookieSecure = env.AUTH_COOKIE_SECURE || env.NODE_ENV === "production";
+  if (env.AUTH_COOKIE_SAME_SITE === "none" && !cookieSecure) {
+    throw new Error("AUTH_COOKIE_SAME_SITE=none requires AUTH_COOKIE_SECURE=true.");
   }
 
   const app = Fastify({
@@ -78,8 +82,8 @@ export async function buildApp(env: AppEnv) {
     contentSecurityPolicy: {
       directives: {
         defaultSrc: ["'self'"],
-        scriptSrc: ["'self'", "https://accounts.google.com"],
-        connectSrc: ["'self'", "https://accounts.google.com", "https://openidconnect.googleapis.com"],
+        scriptSrc: ["'self'"],
+        connectSrc: ["'self'"],
         imgSrc: ["'self'", "data:", "blob:", "https:"],
         mediaSrc: ["'self'", "blob:", "https:"],
         styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
@@ -106,7 +110,6 @@ export async function buildApp(env: AppEnv) {
   const postLedgerService = new PostPopularityLedgerService(env.POST_LEDGER_PATH);
   const authSessions = await AuthSessionService.create({
     sessionTtlMs: env.AUTH_SESSION_TTL_HOURS * 60 * 60 * 1000,
-    googleOauthClientIdsRaw: env.GOOGLE_OAUTH_CLIENT_IDS,
     redisUrl: env.REDIS_URL,
     storeMode: env.AUTH_SESSION_STORE,
     redisKeyPrefix: env.AUTH_SESSION_REDIS_PREFIX,
@@ -114,6 +117,16 @@ export async function buildApp(env: AppEnv) {
   });
   app.addHook("onClose", async () => {
     await authSessions.close();
+  });
+  const webauthnExpectedOrigins = env.WEBAUTHN_EXPECTED_ORIGINS
+    .split(",")
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
+  const passkeys = new PasskeyService({
+    ledgerPath: env.PASSKEY_LEDGER_PATH,
+    rpID: env.WEBAUTHN_RP_ID,
+    rpName: env.WEBAUTHN_RP_NAME,
+    expectedOrigins: webauthnExpectedOrigins.length > 0 ? webauthnExpectedOrigins : ["http://localhost:5173"]
   });
   const preLedgerQueue = new PreLedgerQueueService({
     maxPending: env.PRE_LEDGER_QUEUE_MAX_PENDING,
@@ -130,8 +143,20 @@ export async function buildApp(env: AppEnv) {
   });
 
   await registerHealthRoutes(app);
+  await registerLinkRoutes(app);
   await registerModerationRoutes(app, env.MODERATION_MODEL_RUNTIME, authSessions);
-  await registerAuthRoutes(app, profileLedgerService, authSessions, env.NODE_ENV);
+  await registerAuthRoutes(
+    app,
+    profileLedgerService,
+    authSessions,
+    passkeys,
+    env.GUEST_PASSKEY_SESSION_TTL_MINUTES,
+    {
+      sameSite: env.AUTH_COOKIE_SAME_SITE,
+      secure: cookieSecure,
+      domain: cookieDomain || undefined
+    }
+  );
   await registerMediaRoutes(
     app,
     env.MEDIA_INDEX_PATH,

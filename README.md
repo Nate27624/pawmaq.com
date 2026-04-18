@@ -42,8 +42,8 @@ Build a free, open-source community platform that combines:
 - Infinite scroll with client-side "seen post" tracking to avoid repeat posts
 - Composer supports text-only posts, plus optional `video`, `gif`, and `png` uploads
 - `.jpg`/`.jpeg` uploads are converted to `.png` in-browser
-- Post budget limit is `200MB` total (`text + media`)
-- Posting, commenting, voting, and media uploads require sign-in (Google OAuth supported)
+- Post budget limit is `50MB` daily (`text + media`)
+- Posting, commenting, voting, and media uploads require anonymous passkey sign-in
 - Hidden ledger route at `/ledger` (not linked in the main UI) with searchable profile + post ledger export
 - Interactive test dashboard at `/test-lab` for custom test users/posts/comments/replies and scenario execution
 - Optional RSS bot ingestion (Mastodon-compatible RSS) to seed feed content into the ledgers
@@ -89,28 +89,55 @@ To run the repository security checks:
 corepack pnpm security:full
 ```
 
-## Google Sign-In Setup
+## Anonymous Sign-In Setup
 
-1. Create a Web OAuth client in Google Cloud Console.
-2. Add authorized JavaScript origins:
-   - `http://localhost:5173` (web dev)
-   - your production web origin (for example `https://pawmaq.com`)
-3. Set environment variables:
-   - `VITE_GOOGLE_CLIENT_ID` in the web app env.
-   - `GOOGLE_OAUTH_CLIENT_IDS` in the API env (comma-separated allowlist).
-4. Configure persistent auth sessions:
+Sign-in is passkey-only and anonymous by default:
+
+1. Ensure WebAuthn env values are set for your domain:
+   - `WEBAUTHN_RP_ID` (for local dev: `localhost`)
+   - `WEBAUTHN_EXPECTED_ORIGINS` (for local dev: `http://localhost:5173,http://127.0.0.1:5173`)
+2. Configure persistent auth sessions:
    - `AUTH_SESSION_STORE=redis`
    - `REDIS_URL=redis://...`
-5. In production:
-   - `GOOGLE_OAUTH_CLIENT_IDS` is required.
+3. In production:
    - `AUTH_SESSION_STORE` must be `redis`.
-   - API startup fails fast if these are missing.
+   - API startup fails fast if this is missing.
 
 Auth/session hardening now includes:
-- Google access token audience validation against `GOOGLE_OAUTH_CLIENT_IDS`.
-- Rate limiting for `POST /v1/auth/google/session`.
+- Anonymous human verification challenge (`POST /v1/auth/human-challenge`) before passkey option requests.
+- One-time, short-lived, IP-bound PoW proofs for passkey auth/register starts.
 - Redis-backed session persistence (survives API restarts).
 - Periodic session validity checks in the client with automatic sign-out on expiry.
+- Cross-device QR pairing with account-linking intent (`POST /v1/auth/pairing/start` with `intent=link`).
+
+## Production Env Template
+
+```bash
+NODE_ENV=production
+HOST=0.0.0.0
+PORT=3000
+
+# CORS (explicit list, comma-separated)
+CORS_ALLOWED_ORIGINS=https://pawmaq.com,https://www.pawmaq.com
+
+# Auth cookies
+AUTH_COOKIE_SAME_SITE=lax
+AUTH_COOKIE_SECURE=true
+AUTH_COOKIE_DOMAIN=.pawmaq.com
+
+# Session durability
+AUTH_SESSION_STORE=redis
+AUTH_SESSION_TTL_HOURS=168
+AUTH_SESSION_REDIS_PREFIX=pawmaq:session:
+REDIS_URL=redis://user:pass@redis-host:6379/0
+
+# WebAuthn
+PASSKEY_LEDGER_PATH=.context/passkey-ledger.json
+WEBAUTHN_RP_NAME=pawmaq.com
+WEBAUTHN_RP_ID=pawmaq.com
+WEBAUTHN_EXPECTED_ORIGINS=https://pawmaq.com,https://www.pawmaq.com
+GUEST_PASSKEY_SESSION_TTL_MINUTES=15
+```
 
 ## Notes
 
