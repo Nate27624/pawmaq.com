@@ -1,11 +1,13 @@
 export type ThemeMode = "light" | "dark";
 
-export type FeedTab = "following" | "world";
+export type FeedTab = "saved" | "following" | "world";
 
 export interface FeedPost {
   id: string;
   author: string;
   handle: string;
+  isAnonymous?: boolean;
+  anonymousKey?: string;
   caption: string;
   originalLanguage: string;
   translatedCaptions?: Record<string, string>;

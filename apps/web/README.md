@@ -10,8 +10,11 @@ Frontend UI prototype for pawmaq:
 - sort mode in account settings: `Most likes` or `Highest approval`
 - text-only posts or optional media uploads (`video`, `gif`, `png`)
 - `.jpg` and `.jpeg` uploads auto-convert to `.png` in-browser
-- upload budget: `200MB` total per post (`text + media`)
-- optional Google sign-in for posting, commenting, voting, and media upload
+- upload budget: `50MB` daily (`text + media`)
+- anonymous passkey sign-in for posting, commenting, voting, and media upload
+- cross-device QR sign-in and signed-in account linking
+- hidden `/ledger` route for searchable full ledger export (not linked from main feed UI)
+- hidden `/test-lab` route for interactive test-case generation (custom users/posts/comments/replies + scenario runs)
 
 ## Run
 
@@ -24,10 +27,13 @@ corepack pnpm dev:web
 
 Open `http://localhost:5173`.
 
-## Google Sign-In
+## Anonymous Passkey Sign-In
 
-Set a Google OAuth client id for browser auth:
+The web app requests a human-verification challenge from the API and solves a local proof-of-work before passkey
+register/auth options are requested.
+
+Set the API base URL for server-persisted profiles (optional in local dev when Vite proxy is enabled):
 
 ```bash
-VITE_GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
+VITE_API_BASE_URL=http://localhost:3000
 ```

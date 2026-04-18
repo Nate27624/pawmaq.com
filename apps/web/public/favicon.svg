@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="pawmaq favicon">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0d1117"/>
+      <stop offset="100%" stop-color="#111827"/>
+    </linearGradient>
+    <linearGradient id="bridge" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#38bdf8"/>
+      <stop offset="100%" stop-color="#22d3ee"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="url(#bg)"/>
+  <path d="M10 43H54" stroke="#1f2937" stroke-width="3" stroke-linecap="round"/>
+  <path d="M18 43V27M46 43V27" stroke="url(#bridge)" stroke-width="3.5" stroke-linecap="round"/>
+  <path d="M18 27Q32 12 46 27" fill="none" stroke="url(#bridge)" stroke-width="3.5" stroke-linecap="round"/>
+  <path d="M22 33Q32 23 42 33" fill="none" stroke="#7dd3fc" stroke-width="2" stroke-linecap="round" opacity="0.9"/>
+  <circle cx="32" cy="48" r="3" fill="#22d3ee"/>
+</svg>

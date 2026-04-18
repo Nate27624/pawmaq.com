@@ -1,0 +1,523 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pawmaq.com/schemas/post-popularity-ledger.schema.json",
+  "title": "Post Popularity Ledger",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "ledger_version",
+    "generated_at",
+    "approval_formula",
+    "timeframes",
+    "posts",
+    "ranking_indexes"
+  ],
+  "properties": {
+    "ledger_version": {
+      "type": "string",
+      "pattern": "^v[0-9]+\\.[0-9]+$"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "approval_formula": {
+      "type": "string",
+      "const": "(likes + 0.5*neutral) / (likes + neutral + dislikes)"
+    },
+    "timeframes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "10m",
+          "1h",
+          "12h",
+          "24h",
+          "1w",
+          "1m",
+          "3m",
+          "1y"
+        ]
+      },
+      "uniqueItems": true,
+      "minItems": 8
+    },
+    "posts": {
+      "type": "object",
+      "description": "Keyed by post_id",
+      "additionalProperties": {
+        "$ref": "#/$defs/postRecord"
+      }
+    },
+    "ranking_indexes": {
+      "$ref": "#/$defs/rankingIndexes"
+    }
+  },
+  "$defs": {
+    "author": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode"
+      ],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "named",
+            "anonymous"
+          ]
+        },
+        "user_id": {
+          "type": "string",
+          "pattern": "^u_[a-zA-Z0-9_-]{3,64}$"
+        },
+        "username": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 64
+        },
+        "usertag": {
+          "type": "string",
+          "pattern": "^@[A-Za-z0-9._-]{2,32}$"
+        },
+        "anonymous_key": {
+          "type": "string",
+          "pattern": "^anon_[a-zA-Z0-9_-]{6,128}$"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "named"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "user_id",
+              "username",
+              "usertag"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "anonymous"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "anonymous_key"
+            ]
+          }
+        }
+      ]
+    },
+    "location": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "country"
+      ],
+      "properties": {
+        "country": {
+          "type": "string",
+          "minLength": 2
+        },
+        "country_code": {
+          "type": "string",
+          "pattern": "^[A-Z]{2}$"
+        },
+        "region_state": {
+          "type": "string",
+          "minLength": 1
+        },
+        "city": {
+          "type": "string",
+          "minLength": 1
+        },
+        "lat": {
+          "type": "number",
+          "minimum": -90,
+          "maximum": 90
+        },
+        "lng": {
+          "type": "number",
+          "minimum": -180,
+          "maximum": 180
+        }
+      }
+    },
+    "textBlock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "text",
+        "encoding"
+      ],
+      "properties": {
+        "type": {
+          "const": "text"
+        },
+        "text": {
+          "type": "string"
+        },
+        "encoding": {
+          "type": "string",
+          "description": "Character encoding, e.g. UTF-8",
+          "default": "UTF-8"
+        }
+      }
+    },
+    "linkBlock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "url"
+      ],
+      "properties": {
+        "type": {
+          "const": "link"
+        },
+        "url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 400
+        }
+      }
+    },
+    "mediaEncoding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mime_type",
+        "bytes",
+        "sha256"
+      ],
+      "properties": {
+        "mime_type": {
+          "type": "string",
+          "minLength": 3
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-fA-F0-9]{64}$"
+        },
+        "codec": {
+          "type": "string",
+          "minLength": 2
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "mediaBlock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "media_kind",
+        "url",
+        "encoding"
+      ],
+      "properties": {
+        "type": {
+          "const": "media"
+        },
+        "media_kind": {
+          "type": "string",
+          "enum": [
+            "image",
+            "jpeg",
+            "png",
+            "gif",
+            "video"
+          ]
+        },
+        "url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "encoding": {
+          "$ref": "#/$defs/mediaEncoding"
+        }
+      }
+    },
+    "commentRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "comment_id",
+        "created_at",
+        "author",
+        "content_blocks",
+        "likes",
+        "neutral",
+        "dislikes"
+      ],
+      "properties": {
+        "comment_id": {
+          "type": "string",
+          "pattern": "^comment_[a-zA-Z0-9_-]{6,128}$"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "author": {
+          "$ref": "#/$defs/author"
+        },
+        "content_blocks": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/textBlock"
+              },
+              {
+                "$ref": "#/$defs/linkBlock"
+              }
+            ]
+          },
+          "minItems": 1
+        },
+        "likes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "neutral": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "dislikes": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "engagement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "likes",
+        "neutral",
+        "dislikes",
+        "comments_count",
+        "comments",
+        "approval_score"
+      ],
+      "properties": {
+        "likes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "neutral": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "dislikes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "comments_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "comments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/commentRecord"
+          }
+        },
+        "approval_score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "postRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "post_id",
+        "created_at",
+        "author",
+        "content_blocks",
+        "location",
+        "engagement"
+      ],
+      "properties": {
+        "post_id": {
+          "type": "string",
+          "pattern": "^post_[a-zA-Z0-9_-]{6,128}$"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "author": {
+          "$ref": "#/$defs/author"
+        },
+        "content_blocks": {
+          "type": "array",
+          "description": "Allows multiple text, link, and media blocks in one post",
+          "minItems": 1,
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/textBlock"
+              },
+              {
+                "$ref": "#/$defs/linkBlock"
+              },
+              {
+                "$ref": "#/$defs/mediaBlock"
+              }
+            ]
+          }
+        },
+        "location": {
+          "$ref": "#/$defs/location"
+        },
+        "engagement": {
+          "$ref": "#/$defs/engagement"
+        }
+      }
+    },
+    "rankEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "post_id",
+        "score",
+        "likes",
+        "approval_score",
+        "created_at"
+      ],
+      "properties": {
+        "post_id": {
+          "type": "string",
+          "pattern": "^post_[a-zA-Z0-9_-]{6,128}$"
+        },
+        "score": {
+          "type": "number"
+        },
+        "likes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "approval_score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "timeframeRanks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "likes",
+        "approval"
+      ],
+      "properties": {
+        "likes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/rankEntry"
+          }
+        },
+        "approval": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/rankEntry"
+          }
+        }
+      }
+    },
+    "rankingIndexes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "by_timeframe"
+      ],
+      "properties": {
+        "by_timeframe": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "10m",
+            "1h",
+            "12h",
+            "24h",
+            "1w",
+            "1m",
+            "3m",
+            "1y"
+          ],
+          "properties": {
+            "10m": {
+              "$ref": "#/$defs/timeframeRanks"
+            },
+            "1h": {
+              "$ref": "#/$defs/timeframeRanks"
+            },
+            "12h": {
+              "$ref": "#/$defs/timeframeRanks"
+            },
+            "24h": {
+              "$ref": "#/$defs/timeframeRanks"
+            },
+            "1w": {
+              "$ref": "#/$defs/timeframeRanks"
+            },
+            "1m": {
+              "$ref": "#/$defs/timeframeRanks"
+            },
+            "3m": {
+              "$ref": "#/$defs/timeframeRanks"
+            },
+            "1y": {
+              "$ref": "#/$defs/timeframeRanks"
+            }
+          }
+        }
+      }
+    }
+  }
+}

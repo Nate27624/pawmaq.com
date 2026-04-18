@@ -1,12 +1,93 @@
 import { z } from "zod";
 
+const DEFAULT_RSS_BOT_FEEDS = JSON.stringify([
+  {
+    feedUrl: "https://feeds.washingtonpost.com/rss/world",
+    handle: "@washpost_world_rss",
+    name: "Washington Post World",
+    countryCode: "US",
+    countryName: "United States"
+  },
+  {
+    feedUrl: "https://feeds.npr.org/1001/rss.xml",
+    handle: "@npr_news_rss",
+    name: "NPR News",
+    countryCode: "US",
+    countryName: "United States"
+  },
+  {
+    feedUrl: "https://feeds.bbci.co.uk/news/world/rss.xml",
+    handle: "@bbc_world_rss",
+    name: "BBC World News",
+    countryCode: "GB",
+    countryName: "United Kingdom"
+  },
+  {
+    feedUrl: "https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml",
+    handle: "@nytimes_top_rss",
+    name: "NYT Top Stories",
+    countryCode: "US",
+    countryName: "United States"
+  },
+  {
+    feedUrl: "https://www.theguardian.com/world/rss",
+    handle: "@guardian_world_rss",
+    name: "The Guardian World",
+    countryCode: "WW",
+    countryName: "Worldwide"
+  }
+]);
+
+function parseBoolean(value: unknown): boolean | unknown {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value !== "string") {
+    return value;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) {
+    return true;
+  }
+  if (["0", "false", "no", "off"].includes(normalized)) {
+    return false;
+  }
+  return value;
+}
+
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   HOST: z.string().default("0.0.0.0"),
   PORT: z.coerce.number().int().positive().default(3000),
+  CORS_ALLOWED_ORIGINS: z.string().default("http://localhost:5173,http://127.0.0.1:5173"),
+  AUTH_COOKIE_SAME_SITE: z.enum(["strict", "lax", "none"]).default("strict"),
+  AUTH_COOKIE_SECURE: z.preprocess(parseBoolean, z.boolean()).default(false),
+  AUTH_COOKIE_DOMAIN: z.string().default(""),
   MODERATION_MODEL_RUNTIME: z.enum(["ollama", "vllm", "tgi"]).default("ollama"),
+  PROFILE_LEDGER_PATH: z.string().default(".context/profile-ledger.json"),
+  POST_LEDGER_PATH: z.string().default(".context/post-popularity-ledger.json"),
+  MEDIA_INDEX_PATH: z.string().default(".context/media-index.json"),
+  MEDIA_STORAGE_DIR: z.string().default(".context/media-uploads"),
+  MEDIA_PUBLIC_BASE_URL: z.string().url().default("http://localhost:3000"),
+  PRE_LEDGER_QUEUE_MAX_PENDING: z.coerce.number().int().positive().default(80),
+  PRE_LEDGER_POSTS_PER_MINUTE_PER_IP: z.coerce.number().int().positive().default(90),
+  PRE_LEDGER_MEDIA_UPLOADS_PER_10M_PER_IP: z.coerce.number().int().positive().default(20),
+  AUTH_SESSION_TTL_HOURS: z.coerce.number().int().positive().default(168),
+  AUTH_SESSION_STORE: z.enum(["auto", "memory", "redis"]).default("memory"),
+  AUTH_SESSION_REDIS_PREFIX: z.string().default("pawmaq:session:"),
+  PASSKEY_LEDGER_PATH: z.string().default(".context/passkey-ledger.json"),
+  WEBAUTHN_RP_NAME: z.string().default("pawmaq.com"),
+  WEBAUTHN_RP_ID: z.string().default("localhost"),
+  WEBAUTHN_EXPECTED_ORIGINS: z.string().default("http://localhost:5173,http://127.0.0.1:5173"),
+  GUEST_PASSKEY_SESSION_TTL_MINUTES: z.coerce.number().int().positive().default(15),
+  RSS_BOTS_ENABLED: z.preprocess(parseBoolean, z.boolean()).default(true),
+  RSS_BOTS_INTERVAL_MINUTES: z.coerce.number().int().positive().default(15),
+  RSS_BOTS_MAX_ITEMS_PER_FEED_PER_RUN: z.coerce.number().int().nonnegative().default(0),
+  RSS_BOTS_USER_AGENT: z.string().default("pawmaq-rss-bot/1.0 (+https://pawmaq.com)"),
+  RSS_BOTS_FEEDS: z.string().default(DEFAULT_RSS_BOT_FEEDS),
+  TEST_LAB_ENABLED: z.preprocess(parseBoolean, z.boolean()).default(false),
   DATABASE_URL: z.string().default("postgresql://pawmaq:pawmaq@postgres:5432/pawmaq"),
-  REDIS_URL: z.string().default("redis://redis:6379"),
+  REDIS_URL: z.string().default(""),
   OLLAMA_BASE_URL: z.string().url().default("http://ollama:11434")
 });
 

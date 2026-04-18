@@ -1,0 +1,241 @@
+{
+  "ledger_version": "v1.0",
+  "generated_at": "2026-04-09T12:00:00Z",
+  "approval_formula": "(likes + 0.5*neutral) / (likes + neutral + dislikes)",
+  "timeframes": [
+    "10m",
+    "1h",
+    "12h",
+    "24h",
+    "1w",
+    "1m",
+    "3m",
+    "1y"
+  ],
+  "posts": {
+    "post_maya_20260409_001": {
+      "post_id": "post_maya_20260409_001",
+      "created_at": "2026-04-09T11:40:00Z",
+      "author": {
+        "mode": "named",
+        "user_id": "u_maya_chow",
+        "username": "Maya Chow",
+        "usertag": "@mayachow"
+      },
+      "content_blocks": [
+        {
+          "type": "text",
+          "text": "Full breakdown from tonight's street shoot.",
+          "encoding": "UTF-8"
+        },
+        {
+          "type": "media",
+          "media_kind": "video",
+          "url": "https://cdn.pawmaq.com/posts/maya/night-shoot.mp4",
+          "encoding": {
+            "mime_type": "video/mp4",
+            "bytes": 68421012,
+            "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+            "codec": "h264",
+            "width": 1080,
+            "height": 1920,
+            "duration_ms": 45231
+          }
+        },
+        {
+          "type": "media",
+          "media_kind": "png",
+          "url": "https://cdn.pawmaq.com/posts/maya/thumbnail.png",
+          "encoding": {
+            "mime_type": "image/png",
+            "bytes": 812340,
+            "sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+            "width": 1080,
+            "height": 1080
+          }
+        },
+        {
+          "type": "link",
+          "url": "https://pawmaq.com/threads/street-workflow",
+          "title": "Workflow notes",
+          "description": "Detailed notes for camera, color, and post."
+        }
+      ],
+      "location": {
+        "country": "United States",
+        "country_code": "US",
+        "region_state": "California",
+        "city": "Los Angeles"
+      },
+      "engagement": {
+        "likes": 14032,
+        "neutral": 4020,
+        "dislikes": 1988,
+        "comments_count": 2,
+        "comments": [
+          {
+            "comment_id": "comment_maya_001",
+            "created_at": "2026-04-09T11:45:20Z",
+            "author": {
+              "mode": "named",
+              "user_id": "u_theo_park",
+              "username": "Theo Park",
+              "usertag": "@theop"
+            },
+            "content_blocks": [
+              {
+                "type": "text",
+                "text": "Great pacing and color work.",
+                "encoding": "UTF-8"
+              }
+            ],
+            "likes": 21,
+            "neutral": 4,
+            "dislikes": 1
+          },
+          {
+            "comment_id": "comment_maya_002",
+            "created_at": "2026-04-09T11:49:13Z",
+            "author": {
+              "mode": "anonymous",
+              "anonymous_key": "anon_3cb87ec78dfe6cbe1"
+            },
+            "content_blocks": [
+              {
+                "type": "text",
+                "text": "Could you share lens settings?",
+                "encoding": "UTF-8"
+              }
+            ],
+            "likes": 8,
+            "neutral": 1,
+            "dislikes": 0
+          }
+        ],
+        "approval_score": 0.801996
+      }
+    },
+    "post_anon_20260409_009": {
+      "post_id": "post_anon_20260409_009",
+      "created_at": "2026-04-09T11:52:00Z",
+      "author": {
+        "mode": "anonymous",
+        "anonymous_key": "anon_5d89403a779a6b8ff"
+      },
+      "content_blocks": [
+        {
+          "type": "text",
+          "text": "Anonymous post with multiple JPEG stills.",
+          "encoding": "UTF-8"
+        },
+        {
+          "type": "media",
+          "media_kind": "jpeg",
+          "url": "https://cdn.pawmaq.com/posts/anon/still-01.jpg",
+          "encoding": {
+            "mime_type": "image/jpeg",
+            "bytes": 390212,
+            "sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+            "width": 2048,
+            "height": 1365
+          }
+        },
+        {
+          "type": "media",
+          "media_kind": "jpeg",
+          "url": "https://cdn.pawmaq.com/posts/anon/still-02.jpg",
+          "encoding": {
+            "mime_type": "image/jpeg",
+            "bytes": 420101,
+            "sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+            "width": 2048,
+            "height": 1365
+          }
+        },
+        {
+          "type": "link",
+          "url": "https://example.org/source-context"
+        }
+      ],
+      "location": {
+        "country": "Philippines",
+        "country_code": "PH",
+        "city": "Cebu"
+      },
+      "engagement": {
+        "likes": 250,
+        "neutral": 90,
+        "dislikes": 30,
+        "comments_count": 0,
+        "comments": [],
+        "approval_score": 0.797297
+      }
+    }
+  },
+  "ranking_indexes": {
+    "by_timeframe": {
+      "10m": {
+        "likes": [],
+        "approval": []
+      },
+      "1h": {
+        "likes": [
+          {
+            "post_id": "post_maya_20260409_001",
+            "score": 14032,
+            "likes": 14032,
+            "approval_score": 0.801996,
+            "created_at": "2026-04-09T11:40:00Z"
+          },
+          {
+            "post_id": "post_anon_20260409_009",
+            "score": 250,
+            "likes": 250,
+            "approval_score": 0.797297,
+            "created_at": "2026-04-09T11:52:00Z"
+          }
+        ],
+        "approval": [
+          {
+            "post_id": "post_maya_20260409_001",
+            "score": 0.801996,
+            "likes": 14032,
+            "approval_score": 0.801996,
+            "created_at": "2026-04-09T11:40:00Z"
+          },
+          {
+            "post_id": "post_anon_20260409_009",
+            "score": 0.797297,
+            "likes": 250,
+            "approval_score": 0.797297,
+            "created_at": "2026-04-09T11:52:00Z"
+          }
+        ]
+      },
+      "12h": {
+        "likes": [],
+        "approval": []
+      },
+      "24h": {
+        "likes": [],
+        "approval": []
+      },
+      "1w": {
+        "likes": [],
+        "approval": []
+      },
+      "1m": {
+        "likes": [],
+        "approval": []
+      },
+      "3m": {
+        "likes": [],
+        "approval": []
+      },
+      "1y": {
+        "likes": [],
+        "approval": []
+      }
+    }
+  }
+}

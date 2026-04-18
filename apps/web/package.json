@@ -11,14 +11,17 @@
     "lint": "echo \"lint not configured yet\""
   },
   "dependencies": {
+    "@simplewebauthn/browser": "^11.0.0",
     "d3-scale": "^4.0.2",
     "i18n-iso-countries": "^7.14.0",
+    "qrcode": "^1.5.4",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-simple-maps": "^3.0.0"
   },
   "devDependencies": {
     "@types/d3-scale": "^4.0.9",
+    "@types/qrcode": "^1.5.6",
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
     "@types/react-simple-maps": "^1.0.0",
